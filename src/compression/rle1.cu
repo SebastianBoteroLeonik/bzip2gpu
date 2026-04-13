@@ -1,6 +1,7 @@
 #include "compression.h"
 #include "utils.h"
 #include <cstdint>
+#include <cstdio>
 #include <thrust/device_vector.h>
 #include <thrust/iterator/constant_iterator.h>
 
