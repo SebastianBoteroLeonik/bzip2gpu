@@ -16,10 +16,10 @@ If anything is partially implemented with more things to be done please include 
 
 - [x] RLE1
 - [ ] fBWT
-- [ ] fMTF
+- [x] fMTF
   - [x] Symbol table generation
-  - [ ] Partial MTF
-  - [ ] Full MTF
+  - [x] Partial MTF
+  - [x] Full MTF
 - [ ] RLE2
 - [ ] Huffman encoding
 
