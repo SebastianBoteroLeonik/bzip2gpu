@@ -22,6 +22,8 @@ If anything is partially implemented with more things to be done please include 
   - [x] Full MTF
 - [ ] RLE2
 - [ ] Huffman encoding
+  - [x] Huffman tree building
+  - [ ] Stream huffman encoding
 
 ### Decompression
 
