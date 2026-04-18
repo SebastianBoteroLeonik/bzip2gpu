@@ -3,7 +3,6 @@
 
 #include <cstdint>
 #include <cstdio>
-#include <cuda_runtime_api.h>
 #include <thrust/device_vector.h>
 #include <thrust/execution_policy.h>
 #include <thrust/scan.h>
