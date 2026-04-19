@@ -50,4 +50,13 @@ void huffman_build_trees(uint16_t *device_data_in, int data_in_len,
                          uint8_t len[max_n_groups][max_alphabet_size],
                          int32_t code[max_n_groups][max_alphabet_size]);
 
+/**
+ * Run Burrows-Wheeler transform
+ *
+ * in: input buffer (device)
+ * in_len: length of the input buffer
+ * out: output buffer containing transformed data (device)
+ */
+void fbwt(const uint8_t *in, int in_len, int *&out);
+
 #endif // !COMPRESSION

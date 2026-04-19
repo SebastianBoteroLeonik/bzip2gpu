@@ -15,7 +15,7 @@ If anything is partially implemented with more things to be done please include 
 ### Compression
 
 - [x] RLE1
-- [ ] fBWT
+- [x] fBWT
 - [x] fMTF
   - [x] Symbol table generation
   - [x] Partial MTF
