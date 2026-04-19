@@ -14,6 +14,22 @@
 int rle1_compress(const uint8_t *in, int in_len, uint8_t *&out);
 
 /**
+ * Run bzip2's RLE2 compression
+ *
+ * in: input buffer (device)
+ * in_len: length of the input buffer
+ * out: output buffer containing compressed data (device)
+ * out_len: length of the output buffer (device)
+ *
+ * Returns size of the compressed output.
+ */
+void rle2_compress(const uint8_t *in,
+                   int in_len,
+                   uint16_t *out,
+                   uint32_t *out_len,
+                   cudaStream_t stream = 0);
+
+/**
  * Find unique bytes in the input buffer and build a symbols table.
  *
  * d_in: input buffer

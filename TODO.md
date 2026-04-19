@@ -20,7 +20,7 @@ If anything is partially implemented with more things to be done please include 
   - [x] Symbol table generation
   - [x] Partial MTF
   - [x] Full MTF
-- [ ] RLE2
+- [x] RLE2
 - [ ] Huffman encoding
   - [x] Huffman tree building
   - [ ] Stream huffman encoding
