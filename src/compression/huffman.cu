@@ -58,8 +58,6 @@ void huff_make_code_lengths(int32_t freq[max_alphabet_size],
   int32_t nNodes, nHeap, n1, n2, i, j, k;
   bool tooLong;
 
-  // constexpr int max_alpha_size = 258;
-
   int32_t heap[max_alphabet_size + 2];
   int32_t weight[max_alphabet_size * 2];
   int32_t parent[max_alphabet_size * 2];
@@ -127,8 +125,11 @@ void huff_make_code_lengths(int32_t freq[max_alphabet_size],
 
 __global__ void count_frequencies(uint16_t *data_in, int data_len, int *freqs) {
   int idx = blockDim.x * blockIdx.x + threadIdx.x;
-  uint8_t chr = data_in[idx];
-  atomicAdd(freqs + chr, 1);
+  if (idx >= data_len) {
+    return;
+  }
+  uint16_t chr = data_in[idx];
+  atomicAdd(&freqs[chr], 1);
 }
 
 inline void huff_assign_codes(int32_t *code, uint8_t *length, int32_t minLen,
@@ -165,6 +166,12 @@ void generate_initial_assignment(int n_groups, int data_len, int alphabet_size,
       a_freq -= freqs[group_end];
       group_end--;
     }
+    // fprintf(stderr,
+    //         "      initial group %d, [%d .. %d], "
+    //         "has %d syms (%4.1f%%)\n",
+    //         n_part, group_start, group_end, a_freq,
+    //         (100.0 * (float)a_freq) / (float)(data_len));
+
     for (int symbol = 0; symbol < alphabet_size; symbol++) {
       if (symbol >= group_start && symbol <= group_end) {
         len[n_part - 1][symbol] = lesser_icost;
@@ -225,15 +232,30 @@ __global__ void count_segment_frequencies(const uint16_t *data, int32_t *rfreq,
   int bg = best_group;
   for (int i = threadIdx.x; i < actual_segment_size; i += blockDim.x) {
     uint16_t symbol = data[gs + i];
-    // Use atomicAdd because other segments might be assigned the same table
+    // if (symbol < max_alphabet_size) {
     atomicAdd(&rfreq[bg * max_alphabet_size + symbol], 1);
+    // } else {
+    //   printf("Rogue symbol detected: %d at data index %d\n", symbol, gs + i);
+    // }
   }
 }
+// __host__ __device__ void VALIDATE_SELS(uint8_t *d_sels, int num_sels) {
+//   for (int i = 0; i < num_sels; i++) {
+//     if (d_sels[i] >= 6) {
+//       printf("%dth selector incorrent. (%d)\n", i, d_sels[i]);
+//     }
+//   }
+// }
+//
+// __global__ void VALIDATE_DEV_SELS(uint8_t *d_sels, int num_sels) {
+//   VALIDATE_SELS(d_sels, num_sels);
+// }
 
-void huffman_build_trees(uint16_t *device_data_in, int data_in_len,
-                         int alphabet_size,
-                         uint8_t len[max_n_groups][max_alphabet_size],
-                         int32_t code[max_n_groups][max_alphabet_size]) {
+int huffman_build_trees(uint16_t *device_data_in, int data_in_len,
+                        int alphabet_size,
+                        uint8_t len[max_n_groups][max_alphabet_size],
+                        int32_t code[max_n_groups][max_alphabet_size],
+                        uint8_t *&selectors) {
   alphabet_size += 2;
   for (int group = 0; group < max_n_groups; group++) {
     for (int symbol = 0; symbol < alphabet_size; symbol++) {
@@ -266,19 +288,24 @@ void huffman_build_trees(uint16_t *device_data_in, int data_in_len,
     CUDA_ERROR_CHECK(cudaFree(dev_freqs));
   }
   generate_initial_assignment(n_groups, data_in_len, alphabet_size, freqs, len);
-  constexpr int n_iters = 4;
   int32_t rfreq[max_n_groups][max_alphabet_size];
   int32_t *dev_rfreq;
   CUDA_ERROR_CHECK(cudaMalloc(&dev_rfreq, sizeof(rfreq)));
   const int num_selectors = (data_in_len + 49) / 50;
-  uint8_t selectors[num_selectors];
+  // uint8_t selectors[num_selectors];
+  selectors = new uint8_t[num_selectors];
   uint8_t *dev_selectors;
-  CUDA_ERROR_CHECK(cudaMalloc(&dev_selectors, num_selectors));
+  CUDA_ERROR_CHECK(
+      cudaMalloc(&dev_selectors, num_selectors * sizeof(*dev_selectors)));
+  constexpr int n_iters = 4;
   for (int iter = 0; iter < n_iters; iter++) {
     CUDA_ERROR_CHECK(cudaMemset(dev_rfreq, 0, sizeof(rfreq)));
     CUDA_ERROR_CHECK(
         cudaMemcpyToSymbol(c_lens, len, max_n_groups * max_alphabet_size));
     constexpr int block_size = 32;
+    CUDA_ERROR_CHECK(
+        cudaMemset(dev_selectors, 0, num_selectors * sizeof(*dev_selectors)));
+    CUDA_ERROR_CHECK(cudaDeviceSynchronize());
     count_segment_frequencies<<<num_selectors, block_size>>>(
         device_data_in, dev_rfreq, dev_selectors, data_in_len, alphabet_size,
         n_groups);
@@ -290,8 +317,10 @@ void huffman_build_trees(uint16_t *device_data_in, int data_in_len,
     }
   }
   CUDA_ERROR_CHECK(cudaFree(dev_rfreq));
-  CUDA_ERROR_CHECK(cudaMemcpy(selectors, dev_selectors, sizeof(selectors),
+  CUDA_ERROR_CHECK(cudaMemcpy(selectors, dev_selectors,
+                              num_selectors * sizeof(*dev_selectors),
                               cudaMemcpyDeviceToHost));
+  CUDA_ERROR_CHECK(cudaDeviceSynchronize());
   CUDA_ERROR_CHECK(cudaFree(dev_selectors));
   // /*--- Compute MTF values for the selectors. ---*/
   // {
@@ -325,4 +354,5 @@ void huffman_build_trees(uint16_t *device_data_in, int data_in_len,
     }
     huff_assign_codes(code[group], len[group], minLen, maxLen, alphabet_size);
   }
+  return num_selectors;
 }

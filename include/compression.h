@@ -63,10 +63,11 @@ void fmtf(const uint8_t *in_original, const int *in_suffix_array, int in_len, ui
  **/
 constexpr int max_n_groups = 6;
 constexpr int max_alphabet_size = 258;
-void huffman_build_trees(uint16_t *device_data_in, int data_in_len,
-                         int alphabet_size,
-                         uint8_t len[max_n_groups][max_alphabet_size],
-                         int32_t code[max_n_groups][max_alphabet_size]);
+int huffman_build_trees(uint16_t *device_data_in, int data_in_len,
+                        int alphabet_size,
+                        uint8_t len[max_n_groups][max_alphabet_size],
+                        int32_t code[max_n_groups][max_alphabet_size],
+                        uint8_t *&selectors);
 
 /**
  * Run Burrows-Wheeler transform
@@ -81,5 +82,11 @@ void fbwt(const uint8_t *in, int in_len, int *&out, cudaStream_t stream = 0);
  * Orchestrates bzip2 compression on the GPU.
  */
 void bzip2_gpu_compress(const uint8_t *in, int in_len, int n, std::vector<uint8_t> &out);
+
+int huffman_encode(uint16_t *dev_data_in, int data_in_len, int alphabet_size,
+                   uint32_t *&dev_encoded_data,
+                   uint8_t len[max_n_groups][max_alphabet_size],
+                   int32_t code[max_n_groups][max_alphabet_size],
+                   uint8_t *dev_selectors, int32_t num_selectors);
 
 #endif // !COMPRESSION
