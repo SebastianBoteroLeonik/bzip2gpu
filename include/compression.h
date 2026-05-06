@@ -61,10 +61,11 @@ void fmtf(const uint8_t *in, int in_len, uint8_t *&out);
  **/
 constexpr int max_n_groups = 6;
 constexpr int max_alphabet_size = 258;
-void huffman_build_trees(uint16_t *device_data_in, int data_in_len,
-                         int alphabet_size,
-                         uint8_t len[max_n_groups][max_alphabet_size],
-                         int32_t code[max_n_groups][max_alphabet_size]);
+int huffman_build_trees(uint16_t *device_data_in, int data_in_len,
+                        int alphabet_size,
+                        uint8_t len[max_n_groups][max_alphabet_size],
+                        int32_t code[max_n_groups][max_alphabet_size],
+                        uint8_t *&selectors);
 
 /**
  * Run Burrows-Wheeler transform
@@ -74,5 +75,11 @@ void huffman_build_trees(uint16_t *device_data_in, int data_in_len,
  * out: output buffer containing transformed data (device)
  */
 void fbwt(const uint8_t *in, int in_len, int *&out);
+
+int huffman_encode(uint16_t *dev_data_in, int data_in_len, int alphabet_size,
+                   uint32_t *&dev_encoded_data,
+                   uint8_t len[max_n_groups][max_alphabet_size],
+                   int32_t code[max_n_groups][max_alphabet_size],
+                   uint8_t *dev_selectors, int32_t num_selectors);
 
 #endif // !COMPRESSION
