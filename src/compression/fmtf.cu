@@ -178,6 +178,7 @@ void fmtf(const uint8_t *in_original, const int *in_suffix_array, int in_len, ui
   delete[] symbol_table;
 
   auto sa_ptr = thrust::device_pointer_cast(in_suffix_array);
-  auto iter = thrust::find_if(thrust::cuda::par.on(stream), sa_ptr, sa_ptr + in_len, is_zero());
-  orig_ptr = thrust::distance(sa_ptr, iter);
+  auto iter = thrust::find_if(thrust::cuda::par.on(stream), sa_ptr,
+                              sa_ptr + in_len, is_zero());
+  orig_ptr = iter - sa_ptr;
 }
