@@ -90,8 +90,24 @@ void compress_block(const uint8_t *in_data, int in_len, BlockData &out_data) {
   uint8_t len[max_n_groups][max_alphabet_size];
   int32_t code[max_n_groups][max_alphabet_size];
   uint8_t *selectors;
-  int num_sels = huffman_build_trees(d_rle2_out, h_rle2_len, alphabet_size, len,
-                                     code, selectors, stream);
+  int num_selectors = huffman_build_trees(d_rle2_out, h_rle2_len, alphabet_size,
+                                          len, code, selectors, stream);
+  CUDA_ERROR_CHECK(cudaStreamSynchronize(stream));
+  uint32_t *dev_encoded;
+  uint8_t *dev_selectors;
+  CUDA_ERROR_CHECK(cudaMallocAsync(&dev_selectors, num_selectors, stream));
+  CUDA_ERROR_CHECK(cudaMemcpy(dev_selectors, selectors, num_selectors,
+                              cudaMemcpyHostToDevice));
+  int encoded_len =
+      huffman_encode(d_rle2_out, h_rle2_len, alphabet_size, dev_encoded, len,
+                     code, dev_selectors, num_selectors, stream);
+  const int total_words = (encoded_len + 31) / 32;
+  uint32_t *host_encoded = new uint32_t[total_words];
+  CUDA_ERROR_CHECK(cudaMemcpy(host_encoded, dev_encoded,
+                              total_words * sizeof(*host_encoded),
+                              cudaMemcpyDeviceToHost));
+  CUDA_ERROR_CHECK(cudaFreeAsync(dev_selectors, stream));
+  CUDA_ERROR_CHECK(cudaFreeAsync(dev_encoded, stream));
   CUDA_ERROR_CHECK(cudaStreamSynchronize(stream));
 
   out_data.orig_ptr = orig_ptr;
