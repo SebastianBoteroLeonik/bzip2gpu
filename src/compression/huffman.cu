@@ -255,7 +255,7 @@ int huffman_build_trees(uint16_t *device_data_in, int data_in_len,
                         int alphabet_size,
                         uint8_t len[max_n_groups][max_alphabet_size],
                         int32_t code[max_n_groups][max_alphabet_size],
-                        uint8_t *&selectors) {
+                        uint8_t *&selectors, cudaStream_t stream) {
   alphabet_size += 2;
   for (int group = 0; group < max_n_groups; group++) {
     for (int symbol = 0; symbol < alphabet_size; symbol++) {
@@ -280,11 +280,11 @@ int huffman_build_trees(uint16_t *device_data_in, int data_in_len,
     CUDA_ERROR_CHECK(cudaMalloc(&dev_freqs, sizeof(freqs)));
     constexpr int block_size = 256;
     const int block_count = (data_in_len + block_size - 1) / block_size;
-    count_frequencies<<<block_count, block_size>>>(device_data_in, data_in_len,
-                                                   dev_freqs);
-    CUDA_ERROR_CHECK(cudaDeviceSynchronize());
-    CUDA_ERROR_CHECK(
-        cudaMemcpy(freqs, dev_freqs, sizeof(freqs), cudaMemcpyDeviceToHost));
+    count_frequencies<<<block_count, block_size, 0, stream>>>(
+        device_data_in, data_in_len, dev_freqs);
+    CUDA_ERROR_CHECK(cudaStreamSynchronize(stream));
+    CUDA_ERROR_CHECK(cudaMemcpyAsync(freqs, dev_freqs, sizeof(freqs),
+                                     cudaMemcpyDeviceToHost, stream));
     CUDA_ERROR_CHECK(cudaFree(dev_freqs));
   }
   generate_initial_assignment(n_groups, data_in_len, alphabet_size, freqs, len);
@@ -299,28 +299,29 @@ int huffman_build_trees(uint16_t *device_data_in, int data_in_len,
       cudaMalloc(&dev_selectors, num_selectors * sizeof(*dev_selectors)));
   constexpr int n_iters = 4;
   for (int iter = 0; iter < n_iters; iter++) {
-    CUDA_ERROR_CHECK(cudaMemset(dev_rfreq, 0, sizeof(rfreq)));
+    CUDA_ERROR_CHECK(cudaMemsetAsync(dev_rfreq, 0, sizeof(rfreq), stream));
     CUDA_ERROR_CHECK(
-        cudaMemcpyToSymbol(c_lens, len, max_n_groups * max_alphabet_size));
+        cudaMemcpyToSymbolAsync(c_lens, len, max_n_groups * max_alphabet_size,
+                                0, cudaMemcpyHostToDevice, stream));
     constexpr int block_size = 32;
-    CUDA_ERROR_CHECK(
-        cudaMemset(dev_selectors, 0, num_selectors * sizeof(*dev_selectors)));
-    CUDA_ERROR_CHECK(cudaDeviceSynchronize());
-    count_segment_frequencies<<<num_selectors, block_size>>>(
+    CUDA_ERROR_CHECK(cudaMemsetAsync(
+        dev_selectors, 0, num_selectors * sizeof(*dev_selectors), stream));
+    CUDA_ERROR_CHECK(cudaStreamSynchronize(stream));
+    count_segment_frequencies<<<num_selectors, block_size, 0, stream>>>(
         device_data_in, dev_rfreq, dev_selectors, data_in_len, alphabet_size,
         n_groups);
-    CUDA_ERROR_CHECK(cudaDeviceSynchronize());
-    CUDA_ERROR_CHECK(
-        cudaMemcpy(rfreq, dev_rfreq, sizeof(rfreq), cudaMemcpyDeviceToHost));
+    CUDA_ERROR_CHECK(cudaStreamSynchronize(stream));
+    CUDA_ERROR_CHECK(cudaMemcpyAsync(rfreq, dev_rfreq, sizeof(rfreq),
+                                     cudaMemcpyDeviceToHost, stream));
     for (int group = 0; group < n_groups; group++) {
       huff_make_code_lengths(rfreq[group], len[group], alphabet_size, 17);
     }
   }
   CUDA_ERROR_CHECK(cudaFree(dev_rfreq));
-  CUDA_ERROR_CHECK(cudaMemcpy(selectors, dev_selectors,
-                              num_selectors * sizeof(*dev_selectors),
-                              cudaMemcpyDeviceToHost));
-  CUDA_ERROR_CHECK(cudaDeviceSynchronize());
+  CUDA_ERROR_CHECK(cudaMemcpyAsync(selectors, dev_selectors,
+                                   num_selectors * sizeof(*dev_selectors),
+                                   cudaMemcpyDeviceToHost, stream));
+  CUDA_ERROR_CHECK(cudaStreamSynchronize(stream));
   CUDA_ERROR_CHECK(cudaFree(dev_selectors));
   // /*--- Compute MTF values for the selectors. ---*/
   // {

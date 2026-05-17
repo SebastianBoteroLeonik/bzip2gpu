@@ -53,7 +53,7 @@ TEST(compress, huffman_tree_builder_stability) {
         cudaMemcpy(device_data, data, sizeof(data), cudaMemcpyHostToDevice));
     uint8_t *selectors;
     int num_selectors = huffman_build_trees(
-        device_data, data_len, alphabet_size, len, code, selectors);
+        device_data, data_len, alphabet_size, len, code, selectors, 0);
     for (int i = 0; i < num_selectors; i++) {
       if (selectors[i] > 5) {
         fprintf(stderr, "wrong sel[%d] = %d, num_sels=%d\n", i, selectors[i],
@@ -178,7 +178,7 @@ TEST(compress, huffman_encoding) {
       cudaMemcpy(device_data, data, sizeof(data), cudaMemcpyHostToDevice));
   uint8_t *selectors;
   int num_selectors = huffman_build_trees(device_data, data_len, alphabet_size,
-                                          len, code, selectors);
+                                          len, code, selectors, 0);
 
   uint32_t *dev_encoded;
   uint8_t *dev_selectors;
