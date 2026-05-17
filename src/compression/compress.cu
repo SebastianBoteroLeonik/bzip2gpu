@@ -62,7 +62,8 @@ void compress_block(const uint8_t *in_data, int in_len, BlockData &out_data) {
 
   uint8_t *d_fmtf_out = nullptr;
   int orig_ptr = 0;
-  fmtf(d_rle1_out, d_bwt_out, rle1_len, d_fmtf_out, orig_ptr, stream);
+  int alphabet_size =
+      fmtf(d_rle1_out, d_bwt_out, rle1_len, d_fmtf_out, orig_ptr, stream);
 
   uint16_t *d_rle2_out = nullptr;
   uint32_t *d_rle2_len = nullptr;
@@ -84,6 +85,13 @@ void compress_block(const uint8_t *in_data, int in_len, BlockData &out_data) {
   CUDA_ERROR_CHECK(cudaMemcpyAsync(out_data.rle2_data.data(), d_rle2_out,
                                    h_rle2_len * sizeof(uint16_t),
                                    cudaMemcpyDeviceToHost, stream));
+  CUDA_ERROR_CHECK(cudaStreamSynchronize(stream));
+
+  uint8_t len[max_n_groups][max_alphabet_size];
+  int32_t code[max_n_groups][max_alphabet_size];
+  uint8_t *selectors;
+  int num_sels = huffman_build_trees(d_rle2_out, h_rle2_len, alphabet_size, len,
+                                     code, selectors, stream);
   CUDA_ERROR_CHECK(cudaStreamSynchronize(stream));
 
   out_data.orig_ptr = orig_ptr;

@@ -49,8 +49,8 @@ int make_symbols_table(const uint8_t *d_in, int d_in_len,
  * in_len: length of the input buffer
  * out: output buffer containing transformed data (device)
  */
-void fmtf(const uint8_t *in_original, const int *in_suffix_array, int in_len,
-          uint8_t *&out, int &orig_ptr, cudaStream_t stream = 0);
+int fmtf(const uint8_t *in_original, const int *in_suffix_array, int in_len,
+         uint8_t *&out, int &orig_ptr, cudaStream_t stream = 0);
 
 /**
  * Run move-to-front transform

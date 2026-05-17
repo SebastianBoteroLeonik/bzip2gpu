@@ -285,7 +285,7 @@ int huffman_build_trees(uint16_t *device_data_in, int data_in_len,
     CUDA_ERROR_CHECK(cudaStreamSynchronize(stream));
     CUDA_ERROR_CHECK(cudaMemcpyAsync(freqs, dev_freqs, sizeof(freqs),
                                      cudaMemcpyDeviceToHost, stream));
-    CUDA_ERROR_CHECK(cudaFree(dev_freqs));
+    CUDA_ERROR_CHECK(cudaFreeAsync(dev_freqs, stream));
   }
   generate_initial_assignment(n_groups, data_in_len, alphabet_size, freqs, len);
   int32_t rfreq[max_n_groups][max_alphabet_size];
@@ -317,12 +317,12 @@ int huffman_build_trees(uint16_t *device_data_in, int data_in_len,
       huff_make_code_lengths(rfreq[group], len[group], alphabet_size, 17);
     }
   }
-  CUDA_ERROR_CHECK(cudaFree(dev_rfreq));
+  CUDA_ERROR_CHECK(cudaFreeAsync(dev_rfreq, stream));
   CUDA_ERROR_CHECK(cudaMemcpyAsync(selectors, dev_selectors,
                                    num_selectors * sizeof(*dev_selectors),
                                    cudaMemcpyDeviceToHost, stream));
   CUDA_ERROR_CHECK(cudaStreamSynchronize(stream));
-  CUDA_ERROR_CHECK(cudaFree(dev_selectors));
+  CUDA_ERROR_CHECK(cudaFreeAsync(dev_selectors, stream));
   // /*--- Compute MTF values for the selectors. ---*/
   // {
   //   uint8_t pos[max_n_groups], ll_i, tmp2, tmp;

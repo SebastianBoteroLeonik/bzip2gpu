@@ -36,7 +36,8 @@ struct MTFAppendUnique {
   }
 };
 
-__global__ void mtf_per_thread_bwt(const uint8_t *d_orig, const int *d_sa, MTFState *d_partial, int N, int J) {
+__global__ void mtf_per_thread_bwt(const uint8_t *d_orig, const int *d_sa,
+                                   MTFState *d_partial, int N, int J) {
   int tid = blockIdx.x * blockDim.x + threadIdx.x;
   int start_idx = tid * J;
   if (start_idx >= N)
@@ -60,8 +61,9 @@ __global__ void mtf_per_thread_bwt(const uint8_t *d_orig, const int *d_sa, MTFSt
   d_partial[tid] = state;
 }
 
-__global__ void apply_mtf_kernel_bwt(const uint8_t *d_orig, const int *d_sa, uint8_t *d_out,
-                                 const MTFState *d_scanned, int N, int J) {
+__global__ void apply_mtf_kernel_bwt(const uint8_t *d_orig, const int *d_sa,
+                                     uint8_t *d_out, const MTFState *d_scanned,
+                                     int N, int J) {
   int tid = blockIdx.x * blockDim.x + threadIdx.x;
   int start_idx = tid * J;
   if (start_idx >= N)
@@ -115,12 +117,12 @@ int make_symbols_table(const uint8_t *d_in, int d_in_len,
   CUDA_ERROR_CHECK(cudaMemsetAsync(symbols_flags, 0, 256, stream));
   constexpr int threadsPerBlock = 256;
   int blocksPerGrid = (d_in_len + threadsPerBlock - 1) / threadsPerBlock;
-  find_uniques_kernel<<<blocksPerGrid, threadsPerBlock, 0, stream>>>(d_in, symbols_flags,
-                                                          d_in_len);
+  find_uniques_kernel<<<blocksPerGrid, threadsPerBlock, 0, stream>>>(
+      d_in, symbols_flags, d_in_len);
   char symbols_flags_host[256];
   CUDA_ERROR_CHECK(cudaMemcpyAsync(symbols_flags_host, symbols_flags,
-                              sizeof(symbols_flags_host),
-                              cudaMemcpyDeviceToHost, stream));
+                                   sizeof(symbols_flags_host),
+                                   cudaMemcpyDeviceToHost, stream));
   CUDA_ERROR_CHECK(cudaStreamSynchronize(stream));
   int count = 0;
   for (int i = 0; i < 256; i++) {
@@ -141,15 +143,17 @@ struct is_zero {
   __host__ __device__ bool operator()(const int x) { return x == 0; }
 };
 
-void fmtf(const uint8_t *in_original, const int *in_suffix_array, int in_len, uint8_t *&d_out, int &orig_ptr, cudaStream_t stream) {
+int fmtf(const uint8_t *in_original, const int *in_suffix_array, int in_len,
+         uint8_t *&d_out, int &orig_ptr, cudaStream_t stream) {
   if (in_len == 0)
-    return;
+    return 0;
 
   const int N = in_len;
   const int J = 64;
   int num_threads = (N + J - 1) / J;
 
-  CUDA_ERROR_CHECK(cudaMallocAsync((void **)&d_out, N * sizeof(uint8_t), stream));
+  CUDA_ERROR_CHECK(
+      cudaMallocAsync((void **)&d_out, N * sizeof(uint8_t), stream));
 
   thrust::device_vector<MTFState> d_partial(num_threads);
   thrust::device_vector<MTFState> d_scanned(num_threads);
@@ -158,10 +162,12 @@ void fmtf(const uint8_t *in_original, const int *in_suffix_array, int in_len, ui
   int gridSize = (num_threads + blockSize - 1) / blockSize;
 
   mtf_per_thread_bwt<<<gridSize, blockSize, 0, stream>>>(
-      in_original, in_suffix_array, thrust::raw_pointer_cast(d_partial.data()), N, J);
+      in_original, in_suffix_array, thrust::raw_pointer_cast(d_partial.data()),
+      N, J);
 
   uint8_t *symbol_table;
-  int table_size = make_symbols_table(in_original, in_len, symbol_table, stream);
+  int table_size =
+      make_symbols_table(in_original, in_len, symbol_table, stream);
 
   MTFState identity;
   identity.size = table_size;
@@ -169,16 +175,19 @@ void fmtf(const uint8_t *in_original, const int *in_suffix_array, int in_len, ui
     identity.chars[i] = symbol_table[i];
   }
 
-  thrust::exclusive_scan(thrust::cuda::par.on(stream), d_partial.begin(), d_partial.end(),
-                         d_scanned.begin(), identity, MTFAppendUnique());
+  thrust::exclusive_scan(thrust::cuda::par.on(stream), d_partial.begin(),
+                         d_partial.end(), d_scanned.begin(), identity,
+                         MTFAppendUnique());
 
   apply_mtf_kernel_bwt<<<gridSize, blockSize, 0, stream>>>(
-      in_original, in_suffix_array, d_out, thrust::raw_pointer_cast(d_scanned.data()), N, J);
-  
+      in_original, in_suffix_array, d_out,
+      thrust::raw_pointer_cast(d_scanned.data()), N, J);
+
   delete[] symbol_table;
 
   auto sa_ptr = thrust::device_pointer_cast(in_suffix_array);
   auto iter = thrust::find_if(thrust::cuda::par.on(stream), sa_ptr,
                               sa_ptr + in_len, is_zero());
   orig_ptr = iter - sa_ptr;
+  return table_size;
 }
