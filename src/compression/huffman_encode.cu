@@ -127,6 +127,8 @@ int huffman_encode(uint16_t *dev_data_in, int data_in_len, int alphabet_size,
         dev_encoded_data, data_in_len);
     CUDA_ERROR_CHECK(cudaStreamSynchronize(stream));
   }
+  CUDA_ERROR_CHECK(cudaFreeAsync(dev_bit_lengths, stream));
+  CUDA_ERROR_CHECK(cudaFreeAsync(dev_bit_offsets, stream));
 
   return total_bits;
 }
