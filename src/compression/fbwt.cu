@@ -5,6 +5,7 @@
 #include <thrust/host_vector.h>
 #include <thrust/sequence.h>
 #include <thrust/sort.h>
+#include <thrust/execution_policy.h>
 
 struct suffix_comparator {
   const uint8_t *str;
@@ -25,18 +26,17 @@ struct suffix_comparator {
 };
 
 
-void fbwt(const uint8_t *d_in, int in_len, int *&d_out) {
+void fbwt(const uint8_t *d_in, int in_len, int *&d_out, cudaStream_t stream) {
   if (in_len == 0)
     return;
 
-  CUDA_ERROR_CHECK(cudaMalloc(&d_out, in_len * sizeof(int)));
+  CUDA_ERROR_CHECK(cudaMallocAsync(&d_out, in_len * sizeof(int), stream));
 
   thrust::device_ptr<int> d_out_ptr(d_out);
-  thrust::sequence(d_out_ptr, d_out_ptr + in_len);
+  thrust::sequence(thrust::cuda::par.on(stream), d_out_ptr, d_out_ptr + in_len);
 
-  thrust::sort(d_out_ptr, d_out_ptr + in_len, suffix_comparator(d_in, in_len));
+  thrust::sort(thrust::cuda::par.on(stream), d_out_ptr, d_out_ptr + in_len, suffix_comparator(d_in, in_len));
 
-  cudaDeviceSynchronize();
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
       printf("GPU CRASHED: %s\n", cudaGetErrorString(err));

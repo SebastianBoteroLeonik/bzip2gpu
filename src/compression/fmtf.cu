@@ -36,8 +36,7 @@ struct MTFAppendUnique {
   }
 };
 
-__global__ void mtf_per_thread(const uint8_t *d_in, MTFState *d_partial, int N,
-                               int J) {
+__global__ void mtf_per_thread_bwt(const uint8_t *d_orig, const int *d_sa, MTFState *d_partial, int N, int J) {
   int tid = blockIdx.x * blockDim.x + threadIdx.x;
   int start_idx = tid * J;
   if (start_idx >= N)
@@ -50,7 +49,8 @@ __global__ void mtf_per_thread(const uint8_t *d_in, MTFState *d_partial, int N,
   bool seen[256] = {false};
 
   for (int i = end_idx - 1; i >= start_idx; --i) {
-    uint8_t c = d_in[i];
+    int sa_val = d_sa[i];
+    uint8_t c = (sa_val == 0) ? d_orig[N - 1] : d_orig[sa_val - 1];
     if (!seen[c]) {
       state.chars[state.size++] = c;
       seen[c] = true;
@@ -60,7 +60,7 @@ __global__ void mtf_per_thread(const uint8_t *d_in, MTFState *d_partial, int N,
   d_partial[tid] = state;
 }
 
-__global__ void apply_mtf_kernel(const uint8_t *d_in, uint8_t *d_out,
+__global__ void apply_mtf_kernel_bwt(const uint8_t *d_orig, const int *d_sa, uint8_t *d_out,
                                  const MTFState *d_scanned, int N, int J) {
   int tid = blockIdx.x * blockDim.x + threadIdx.x;
   int start_idx = tid * J;
@@ -75,7 +75,8 @@ __global__ void apply_mtf_kernel(const uint8_t *d_in, uint8_t *d_out,
   }
 
   for (int i = start_idx; i < end_idx; ++i) {
-    uint8_t c = d_in[i];
+    int sa_val = d_sa[i];
+    uint8_t c = (sa_val == 0) ? d_orig[N - 1] : d_orig[sa_val - 1];
 
     int pos = 0;
     for (; pos < 256; ++pos) {
@@ -108,19 +109,19 @@ __global__ void find_uniques_kernel(const uint8_t *input, char *global_flags,
 }
 
 int make_symbols_table(const uint8_t *d_in, int d_in_len,
-                       uint8_t *&symbols_table) {
+                       uint8_t *&symbols_table, cudaStream_t stream) {
   char *symbols_flags;
-  CUDA_ERROR_CHECK(cudaMalloc(&symbols_flags, 256));
-  CUDA_ERROR_CHECK(cudaMemset(symbols_flags, 0, 256));
+  CUDA_ERROR_CHECK(cudaMallocAsync(&symbols_flags, 256, stream));
+  CUDA_ERROR_CHECK(cudaMemsetAsync(symbols_flags, 0, 256, stream));
   constexpr int threadsPerBlock = 256;
   int blocksPerGrid = (d_in_len + threadsPerBlock - 1) / threadsPerBlock;
-  find_uniques_kernel<<<blocksPerGrid, threadsPerBlock>>>(d_in, symbols_flags,
+  find_uniques_kernel<<<blocksPerGrid, threadsPerBlock, 0, stream>>>(d_in, symbols_flags,
                                                           d_in_len);
-  CUDA_ERROR_CHECK(cudaDeviceSynchronize());
   char symbols_flags_host[256];
-  CUDA_ERROR_CHECK(cudaMemcpy(symbols_flags_host, symbols_flags,
+  CUDA_ERROR_CHECK(cudaMemcpyAsync(symbols_flags_host, symbols_flags,
                               sizeof(symbols_flags_host),
-                              cudaMemcpyDeviceToHost));
+                              cudaMemcpyDeviceToHost, stream));
+  CUDA_ERROR_CHECK(cudaStreamSynchronize(stream));
   int count = 0;
   for (int i = 0; i < 256; i++) {
     count += symbols_flags_host[i];
@@ -132,10 +133,15 @@ int make_symbols_table(const uint8_t *d_in, int d_in_len,
       symbols_table[j++] = i;
     }
   }
+  CUDA_ERROR_CHECK(cudaFreeAsync(symbols_flags, stream));
   return count;
 }
 
-void fmtf(const uint8_t *d_in, int in_len, uint8_t *&d_out) {
+struct is_zero {
+  __host__ __device__ bool operator()(const int x) { return x == 0; }
+};
+
+void fmtf(const uint8_t *in_original, const int *in_suffix_array, int in_len, uint8_t *&d_out, int &orig_ptr, cudaStream_t stream) {
   if (in_len == 0)
     return;
 
@@ -143,7 +149,7 @@ void fmtf(const uint8_t *d_in, int in_len, uint8_t *&d_out) {
   const int J = 64;
   int num_threads = (N + J - 1) / J;
 
-  CUDA_ERROR_CHECK(cudaMalloc((void **)&d_out, N * sizeof(uint8_t)));
+  CUDA_ERROR_CHECK(cudaMallocAsync((void **)&d_out, N * sizeof(uint8_t), stream));
 
   thrust::device_vector<MTFState> d_partial(num_threads);
   thrust::device_vector<MTFState> d_scanned(num_threads);
@@ -151,12 +157,11 @@ void fmtf(const uint8_t *d_in, int in_len, uint8_t *&d_out) {
   int blockSize = 256;
   int gridSize = (num_threads + blockSize - 1) / blockSize;
 
-  mtf_per_thread<<<gridSize, blockSize>>>(
-      d_in, thrust::raw_pointer_cast(d_partial.data()), N, J);
-  cudaDeviceSynchronize();
+  mtf_per_thread_bwt<<<gridSize, blockSize, 0, stream>>>(
+      in_original, in_suffix_array, thrust::raw_pointer_cast(d_partial.data()), N, J);
 
   uint8_t *symbol_table;
-  int table_size = make_symbols_table(d_in, in_len, symbol_table);
+  int table_size = make_symbols_table(in_original, in_len, symbol_table, stream);
 
   MTFState identity;
   identity.size = table_size;
@@ -164,10 +169,15 @@ void fmtf(const uint8_t *d_in, int in_len, uint8_t *&d_out) {
     identity.chars[i] = symbol_table[i];
   }
 
-  thrust::exclusive_scan(thrust::device, d_partial.begin(), d_partial.end(),
+  thrust::exclusive_scan(thrust::cuda::par.on(stream), d_partial.begin(), d_partial.end(),
                          d_scanned.begin(), identity, MTFAppendUnique());
 
-  apply_mtf_kernel<<<gridSize, blockSize>>>(
-      d_in, d_out, thrust::raw_pointer_cast(d_scanned.data()), N, J);
-  cudaDeviceSynchronize();
+  apply_mtf_kernel_bwt<<<gridSize, blockSize, 0, stream>>>(
+      in_original, in_suffix_array, d_out, thrust::raw_pointer_cast(d_scanned.data()), N, J);
+  
+  delete[] symbol_table;
+
+  auto sa_ptr = thrust::device_pointer_cast(in_suffix_array);
+  auto iter = thrust::find_if(thrust::cuda::par.on(stream), sa_ptr, sa_ptr + in_len, is_zero());
+  orig_ptr = thrust::distance(sa_ptr, iter);
 }

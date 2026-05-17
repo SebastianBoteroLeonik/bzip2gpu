@@ -1,6 +1,8 @@
 #ifndef COMPRESSION
 
 #include <stdint.h>
+#include <cuda_runtime.h>
+#include <vector>
 
 /**
  * Run bzip2's RLE1 compression
@@ -11,7 +13,7 @@
  *
  * Returns size of the compressed output.
  */
-int rle1_compress(const uint8_t *in, int in_len, uint8_t *&out);
+int rle1_compress(const uint8_t *in, int in_len, uint8_t *&out, cudaStream_t stream = 0);
 
 /**
  * Run bzip2's RLE2 compression
@@ -40,7 +42,7 @@ void rle2_compress(const uint8_t *in,
  * Returns number of unique symbols.
  */
 int make_symbols_table(const uint8_t *d_in, int d_in_len,
-                       uint8_t *&symbols_table);
+                       uint8_t *&symbols_table, cudaStream_t stream = 0);
 
 /**
  * Run move-to-front transform
@@ -49,7 +51,7 @@ int make_symbols_table(const uint8_t *d_in, int d_in_len,
  * in_len: length of the input buffer
  * out: output buffer containing transformed data (device)
  */
-void fmtf(const uint8_t *in, int in_len, uint8_t *&out);
+void fmtf(const uint8_t *in_original, const int *in_suffix_array, int in_len, uint8_t *&out, int &orig_ptr, cudaStream_t stream = 0);
 
 /**
  * Run move-to-front transform
@@ -73,6 +75,11 @@ void huffman_build_trees(uint16_t *device_data_in, int data_in_len,
  * in_len: length of the input buffer
  * out: output buffer containing transformed data (device)
  */
-void fbwt(const uint8_t *in, int in_len, int *&out);
+void fbwt(const uint8_t *in, int in_len, int *&out, cudaStream_t stream = 0);
+
+/**
+ * Orchestrates bzip2 compression on the GPU.
+ */
+void bzip2_gpu_compress(const uint8_t *in, int in_len, int n, std::vector<uint8_t> &out);
 
 #endif // !COMPRESSION

@@ -5,6 +5,18 @@
 
 #include "compression.h"
 #include "utils.h"
+#include <thrust/transform.h>
+#include <thrust/execution_policy.h>
+#include <thrust/iterator/counting_iterator.h>
+#include <thrust/device_ptr.h>
+
+struct ShiftedIdentity {
+  int N;
+  ShiftedIdentity(int N) : N(N) {}
+  __host__ __device__ int operator()(int idx) const {
+    return (idx + 1) % N;
+  }
+};
 
 TEST(compress, mtf_symbol_table_generation) {
   uint8_t reference_symbol_table[256];
@@ -74,9 +86,17 @@ void simple_fmtf(const uint8_t *in, int in_len, uint8_t *&out) {
   CUDA_ERROR_CHECK(cudaMalloc(&input_cuda, sizeof(input)));                    \
   CUDA_ERROR_CHECK(                                                            \
       cudaMemcpy(input_cuda, input, sizeof(input), cudaMemcpyHostToDevice));   \
+  int *sa_cuda;                                                                \
+  CUDA_ERROR_CHECK(cudaMalloc(&sa_cuda, in_len * sizeof(int)));                \
+  thrust::transform(thrust::device, thrust::make_counting_iterator(0),         \
+                    thrust::make_counting_iterator(in_len),                    \
+                    thrust::device_pointer_cast(sa_cuda),                      \
+                    ShiftedIdentity(in_len));                                  \
   uint8_t *cuda_output = nullptr;                                              \
-  fmtf(input_cuda, in_len, cuda_output);                                       \
+  int orig_ptr = 0;                                                            \
+  fmtf(input_cuda, sa_cuda, in_len, cuda_output, orig_ptr);                    \
   CUDA_ERROR_CHECK(cudaFree(input_cuda));                                      \
+  CUDA_ERROR_CHECK(cudaFree(sa_cuda));                                         \
   ASSERT_NE(reference_output, nullptr);                                        \
   ASSERT_NE(cuda_output, nullptr);                                             \
   uint8_t *cuda_output_host = new uint8_t[in_len];                             \

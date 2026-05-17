@@ -53,43 +53,44 @@ __global__ void write_bzip2_rle1_kernel(const uint8_t *chars, const int *counts,
   }
 }
 
-int rle1_compress(const uint8_t *d_in, int in_len, uint8_t *&d_out) {
+#include <thrust/execution_policy.h>
+
+int rle1_compress(const uint8_t *d_in, int in_len, uint8_t *&d_out, cudaStream_t stream) {
   if (in_len == 0)
     return 0;
 
+  auto exec_policy = thrust::cuda::par.on(stream);
   thrust::device_ptr<const uint8_t> d_in_ptr(d_in);
 
   thrust::device_vector<uint8_t> d_chars(in_len);
   thrust::device_vector<int> d_counts(in_len);
 
-  auto new_end = thrust::reduce_by_key(d_in_ptr, d_in_ptr + in_len,
+  auto new_end = thrust::reduce_by_key(exec_policy, d_in_ptr, d_in_ptr + in_len,
                                        thrust::make_constant_iterator(1),
                                        d_chars.begin(), d_counts.begin());
   int num_runs = new_end.first - d_chars.begin();
 
   thrust::device_vector<int> d_sizes(num_runs);
-  thrust::transform(d_counts.begin(), d_counts.begin() + num_runs,
+  thrust::transform(exec_policy, d_counts.begin(), d_counts.begin() + num_runs,
                     d_sizes.begin(), RunSizeCalc());
 
   thrust::device_vector<int> d_offsets(num_runs);
-  thrust::exclusive_scan(d_sizes.begin(), d_sizes.begin() + num_runs,
+  thrust::exclusive_scan(exec_policy, d_sizes.begin(), d_sizes.begin() + num_runs,
                          d_offsets.begin());
 
   int last_size = d_sizes[num_runs - 1];
   int last_offset = d_offsets[num_runs - 1];
   int total_out_size = last_offset + last_size;
 
-  CUDA_ERROR_CHECK(cudaMalloc((void **)&d_out, total_out_size));
+  CUDA_ERROR_CHECK(cudaMallocAsync((void **)&d_out, total_out_size, stream));
 
   constexpr int threadsPerBlock = 256;
   int blocks = (num_runs + threadsPerBlock - 1) / threadsPerBlock;
 
-  write_bzip2_rle1_kernel<<<blocks, threadsPerBlock>>>(
+  write_bzip2_rle1_kernel<<<blocks, threadsPerBlock, 0, stream>>>(
       thrust::raw_pointer_cast(d_chars.data()),
       thrust::raw_pointer_cast(d_counts.data()),
       thrust::raw_pointer_cast(d_offsets.data()), num_runs, d_out);
-
-  CUDA_ERROR_CHECK(cudaDeviceSynchronize());
 
   return total_out_size;
 }
