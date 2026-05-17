@@ -87,6 +87,7 @@ int huffman_encode(uint16_t *dev_data_in, int data_in_len, int alphabet_size,
                    uint32_t *&dev_encoded_data,
                    uint8_t len[max_n_groups][max_alphabet_size],
                    int32_t code[max_n_groups][max_alphabet_size],
-                   uint8_t *dev_selectors, int32_t num_selectors);
+                   uint8_t *dev_selectors, int32_t num_selectors,
+                   cudaStream_t stream);
 
 #endif // !COMPRESSION

@@ -188,7 +188,7 @@ TEST(compress, huffman_encoding) {
 
   int encoded_len =
       huffman_encode(device_data, data_len, alphabet_size, dev_encoded, len,
-                     code, dev_selectors, num_selectors);
+                     code, dev_selectors, num_selectors, 0);
   const int total_words = (encoded_len + 31) / 32;
   uint32_t *host_encoded = new uint32_t[total_words];
   CUDA_ERROR_CHECK(cudaMemcpy(host_encoded, dev_encoded,

@@ -141,11 +141,14 @@ int huffman_encode(uint16_t *dev_data_in, int data_in_len, int alphabet_size,
                    uint32_t *&dev_encoded_data,
                    uint8_t len[max_n_groups][max_alphabet_size],
                    int32_t code[max_n_groups][max_alphabet_size],
-                   uint8_t *dev_selectors, int32_t num_selectors) {
-  CUDA_ERROR_CHECK(
-      cudaMemcpyToSymbol(c_len, len, max_n_groups * max_alphabet_size));
-  CUDA_ERROR_CHECK(cudaMemcpyToSymbol(
-      c_code, code, sizeof(**code) * max_n_groups * max_alphabet_size));
+                   uint8_t *dev_selectors, int32_t num_selectors,
+                   cudaStream_t stream) {
+  CUDA_ERROR_CHECK(cudaMemcpyToSymbolAsync(c_len, len,
+                                           max_n_groups * max_alphabet_size, 0,
+                                           cudaMemcpyHostToDevice, stream));
+  CUDA_ERROR_CHECK(cudaMemcpyToSymbolAsync(
+      c_code, code, sizeof(**code) * max_n_groups * max_alphabet_size, 0,
+      cudaMemcpyHostToDevice, stream));
 
   thrust::device_vector<int32_t> dev_bit_lengths(data_in_len);
   thrust::device_vector<int32_t> dev_bit_offsets(data_in_len);
@@ -153,10 +156,10 @@ int huffman_encode(uint16_t *dev_data_in, int data_in_len, int alphabet_size,
     constexpr int block_size = 256;
     const int blocks_count = (data_in_len + block_size - 1) / block_size;
 
-    calc_bit_lengths_kernel<<<blocks_count, block_size>>>(
+    calc_bit_lengths_kernel<<<blocks_count, block_size, 0, stream>>>(
         dev_data_in, dev_selectors,
         thrust::raw_pointer_cast(dev_bit_lengths.data()), data_in_len);
-    CUDA_ERROR_CHECK(cudaDeviceSynchronize());
+    CUDA_ERROR_CHECK(cudaStreamSynchronize(stream));
   }
 
   thrust::exclusive_scan(dev_bit_lengths.begin(), dev_bit_lengths.end(),
@@ -170,18 +173,18 @@ int huffman_encode(uint16_t *dev_data_in, int data_in_len, int alphabet_size,
 
   CUDA_ERROR_CHECK(
       cudaMalloc(&dev_encoded_data, total_words * sizeof(uint32_t)));
-  CUDA_ERROR_CHECK(
-      cudaMemset(dev_encoded_data, 0, total_words * sizeof(uint32_t)));
+  CUDA_ERROR_CHECK(cudaMemsetAsync(dev_encoded_data, 0,
+                                   total_words * sizeof(uint32_t), stream));
   {
     constexpr int block_size = 50;
     const int blocks_count = (data_in_len + block_size - 1) / block_size;
 
-    pack_bits_kernel<<<blocks_count, block_size>>>(
+    pack_bits_kernel<<<blocks_count, block_size, 0, stream>>>(
         dev_data_in, dev_selectors,
         thrust::raw_pointer_cast(dev_bit_offsets.data()),
         thrust::raw_pointer_cast(dev_bit_lengths.data()), dev_encoded_data,
         data_in_len);
-    CUDA_ERROR_CHECK(cudaDeviceSynchronize());
+    CUDA_ERROR_CHECK(cudaStreamSynchronize(stream));
   }
 
   return total_bits;
