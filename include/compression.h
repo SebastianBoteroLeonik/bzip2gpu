@@ -27,7 +27,7 @@ int rle1_compress(const uint8_t *in, int in_len, uint8_t *&out,
  * Returns size of the compressed output.
  */
 void rle2_compress(const uint8_t *in, int in_len, uint16_t *out,
-                   uint32_t *out_len, cudaStream_t stream = 0);
+                   uint32_t *out_len, int table_size, cudaStream_t stream = 0);
 
 /**
  * Find unique bytes in the input buffer and build a symbols table.
@@ -50,7 +50,8 @@ int make_symbols_table(const uint8_t *d_in, int d_in_len,
  * out: output buffer containing transformed data (device)
  */
 int fmtf(const uint8_t *in_original, const int *in_suffix_array, int in_len,
-         uint8_t *&out, int &orig_ptr, cudaStream_t stream = 0);
+         uint8_t *&out, int &orig_ptr, bool *present_symbols = nullptr,
+         cudaStream_t stream = 0);
 
 /**
  * Run move-to-front transform
@@ -66,7 +67,7 @@ int huffman_build_trees(uint16_t *device_data_in, int data_in_len,
                         int alphabet_size,
                         uint8_t len[max_n_groups][max_alphabet_size],
                         int32_t code[max_n_groups][max_alphabet_size],
-                        uint8_t *&selectors, cudaStream_t stream);
+                        uint8_t *&selectors, int &n_groups, cudaStream_t stream);
 
 /**
  * Run Burrows-Wheeler transform
@@ -88,6 +89,6 @@ int huffman_encode(uint16_t *dev_data_in, int data_in_len, int alphabet_size,
                    uint8_t len[max_n_groups][max_alphabet_size],
                    int32_t code[max_n_groups][max_alphabet_size],
                    uint8_t *dev_selectors, int32_t num_selectors,
-                   cudaStream_t stream);
+                   int n_groups, cudaStream_t stream);
 
 #endif // !COMPRESSION

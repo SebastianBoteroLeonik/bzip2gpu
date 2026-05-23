@@ -255,14 +255,14 @@ int huffman_build_trees(uint16_t *device_data_in, int data_in_len,
                         int alphabet_size,
                         uint8_t len[max_n_groups][max_alphabet_size],
                         int32_t code[max_n_groups][max_alphabet_size],
-                        uint8_t *&selectors, cudaStream_t stream) {
+                        uint8_t *&selectors, int &n_groups,
+                        cudaStream_t stream) {
   alphabet_size += 2;
   for (int group = 0; group < max_n_groups; group++) {
     for (int symbol = 0; symbol < alphabet_size; symbol++) {
       len[group][symbol] = greater_icost;
     }
   }
-  int n_groups;
   if (data_in_len < 200) {
     n_groups = 2;
   } else if (data_in_len < 600) {

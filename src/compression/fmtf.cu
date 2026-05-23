@@ -144,7 +144,8 @@ struct is_zero {
 };
 
 int fmtf(const uint8_t *in_original, const int *in_suffix_array, int in_len,
-         uint8_t *&d_out, int &orig_ptr, cudaStream_t stream) {
+         uint8_t *&d_out, int &orig_ptr, bool *present_symbols,
+         cudaStream_t stream) {
   if (in_len == 0)
     return 0;
 
@@ -166,8 +167,36 @@ int fmtf(const uint8_t *in_original, const int *in_suffix_array, int in_len,
       N, J);
 
   uint8_t *symbol_table;
-  int table_size =
-      make_symbols_table(in_original, in_len, symbol_table, stream);
+  char *symbols_flags;
+  CUDA_ERROR_CHECK(cudaMallocAsync(&symbols_flags, 256, stream));
+  CUDA_ERROR_CHECK(cudaMemsetAsync(symbols_flags, 0, 256, stream));
+  constexpr int threadsPerBlock = 256;
+  int blocksPerGrid = (in_len + threadsPerBlock - 1) / threadsPerBlock;
+  find_uniques_kernel<<<blocksPerGrid, threadsPerBlock, 0, stream>>>(
+      in_original, symbols_flags, in_len);
+  char symbols_flags_host[256];
+  CUDA_ERROR_CHECK(cudaMemcpyAsync(symbols_flags_host, symbols_flags,
+                                   sizeof(symbols_flags_host),
+                                   cudaMemcpyDeviceToHost, stream));
+  CUDA_ERROR_CHECK(cudaStreamSynchronize(stream));
+
+  if (present_symbols) {
+    for (int i = 0; i < 256; i++)
+      present_symbols[i] = (symbols_flags_host[i] != 0);
+  }
+
+  int table_size = 0;
+  for (int i = 0; i < 256; i++)
+    table_size += symbols_flags_host[i];
+
+  symbol_table = new uint8_t[table_size];
+  int j = 0;
+  for (int i = 0; i < 256; i++) {
+    if (symbols_flags_host[i]) {
+      symbol_table[j++] = i;
+    }
+  }
+  CUDA_ERROR_CHECK(cudaFreeAsync(symbols_flags, stream));
 
   MTFState identity;
   identity.size = table_size;

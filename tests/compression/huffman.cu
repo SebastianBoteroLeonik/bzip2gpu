@@ -52,8 +52,9 @@ TEST(compress, huffman_tree_builder_stability) {
     CUDA_ERROR_CHECK(
         cudaMemcpy(device_data, data, sizeof(data), cudaMemcpyHostToDevice));
     uint8_t *selectors;
+    int n_groups;
     int num_selectors = huffman_build_trees(
-        device_data, data_len, alphabet_size, len, code, selectors, 0);
+        device_data, data_len, alphabet_size, len, code, selectors, n_groups, 0);
     for (int i = 0; i < num_selectors; i++) {
       if (selectors[i] > 5) {
         fprintf(stderr, "wrong sel[%d] = %d, num_sels=%d\n", i, selectors[i],
@@ -177,8 +178,9 @@ TEST(compress, huffman_encoding) {
   CUDA_ERROR_CHECK(
       cudaMemcpy(device_data, data, sizeof(data), cudaMemcpyHostToDevice));
   uint8_t *selectors;
+  int n_groups;
   int num_selectors = huffman_build_trees(device_data, data_len, alphabet_size,
-                                          len, code, selectors, 0);
+                                          len, code, selectors, n_groups, 0);
 
   uint32_t *dev_encoded;
   uint8_t *dev_selectors;
@@ -188,7 +190,7 @@ TEST(compress, huffman_encoding) {
 
   int encoded_len =
       huffman_encode(device_data, data_len, alphabet_size, dev_encoded, len,
-                     code, dev_selectors, num_selectors, 0);
+                     code, dev_selectors, num_selectors, n_groups, 0);
   const int total_words = (encoded_len + 31) / 32;
   uint32_t *host_encoded = new uint32_t[total_words];
   CUDA_ERROR_CHECK(cudaMemcpy(host_encoded, dev_encoded,

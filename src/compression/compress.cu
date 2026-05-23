@@ -11,7 +11,14 @@
 struct BlockData {
   uint32_t crc;
   int orig_ptr;
-  std::vector<uint16_t> rle2_data;
+  int alphabet_size;
+  bool present_symbols[256];
+  int num_selectors;
+  std::vector<uint8_t> selectors_mtf;
+  int n_groups;
+  uint8_t huff_len[max_n_groups][max_alphabet_size];
+  std::vector<uint32_t> huff_data;
+  int huff_bits;
 };
 
 class BitWriter {
@@ -62,8 +69,8 @@ void compress_block(const uint8_t *in_data, int in_len, BlockData &out_data) {
 
   uint8_t *d_fmtf_out = nullptr;
   int orig_ptr = 0;
-  int alphabet_size =
-      fmtf(d_rle1_out, d_bwt_out, rle1_len, d_fmtf_out, orig_ptr, stream);
+  int alphabet_size = fmtf(d_rle1_out, d_bwt_out, rle1_len, d_fmtf_out,
+                           orig_ptr, out_data.present_symbols, stream);
 
   uint16_t *d_rle2_out = nullptr;
   uint32_t *d_rle2_len = nullptr;
@@ -74,38 +81,72 @@ void compress_block(const uint8_t *in_data, int in_len, BlockData &out_data) {
       cudaMallocAsync(&d_rle2_out, rle2_max_out * sizeof(uint16_t), stream));
   CUDA_ERROR_CHECK(cudaMallocAsync(&d_rle2_len, sizeof(uint32_t), stream));
 
-  rle2_compress(d_fmtf_out, rle1_len, d_rle2_out, d_rle2_len, stream);
+  rle2_compress(d_fmtf_out, rle1_len, d_rle2_out, d_rle2_len, alphabet_size,
+                stream);
 
   uint32_t h_rle2_len = 0;
   CUDA_ERROR_CHECK(cudaMemcpyAsync(&h_rle2_len, d_rle2_len, sizeof(uint32_t),
                                    cudaMemcpyDeviceToHost, stream));
   CUDA_ERROR_CHECK(cudaStreamSynchronize(stream));
 
-  out_data.rle2_data.resize(h_rle2_len);
-  CUDA_ERROR_CHECK(cudaMemcpyAsync(out_data.rle2_data.data(), d_rle2_out,
-                                   h_rle2_len * sizeof(uint16_t),
-                                   cudaMemcpyDeviceToHost, stream));
-  CUDA_ERROR_CHECK(cudaStreamSynchronize(stream));
-
   uint8_t len[max_n_groups][max_alphabet_size];
   int32_t code[max_n_groups][max_alphabet_size];
   uint8_t *selectors;
-  int num_selectors = huffman_build_trees(d_rle2_out, h_rle2_len, alphabet_size,
-                                          len, code, selectors, stream);
+  int n_groups = 0;
+  int num_selectors =
+      huffman_build_trees(d_rle2_out, h_rle2_len, alphabet_size, len, code,
+                          selectors, n_groups, stream);
   CUDA_ERROR_CHECK(cudaStreamSynchronize(stream));
+
+  out_data.selectors_mtf.resize(num_selectors);
+  {
+    uint8_t pos[max_n_groups];
+    for (int i = 0; i < n_groups; i++)
+      pos[i] = i;
+    for (int i = 0; i < num_selectors; i++) {
+      uint8_t ll_i = selectors[i];
+      int j = 0;
+      uint8_t tmp = pos[j];
+      while (ll_i != tmp) {
+        j++;
+        uint8_t tmp2 = tmp;
+        tmp = pos[j];
+        pos[j] = tmp2;
+      }
+      pos[0] = tmp;
+      out_data.selectors_mtf[i] = j;
+    }
+  }
+
   uint32_t *dev_encoded;
   uint8_t *dev_selectors;
   CUDA_ERROR_CHECK(cudaMallocAsync(&dev_selectors, num_selectors, stream));
-  CUDA_ERROR_CHECK(cudaMemcpy(dev_selectors, selectors, num_selectors,
-                              cudaMemcpyHostToDevice));
-  int encoded_len =
-      huffman_encode(d_rle2_out, h_rle2_len, alphabet_size, dev_encoded, len,
-                     code, dev_selectors, num_selectors, stream);
-  const int total_words = (encoded_len + 31) / 32;
-  uint32_t *host_encoded = new uint32_t[total_words];
-  CUDA_ERROR_CHECK(cudaMemcpy(host_encoded, dev_encoded,
-                              total_words * sizeof(*host_encoded),
-                              cudaMemcpyDeviceToHost));
+  CUDA_ERROR_CHECK(cudaMemcpyAsync(dev_selectors, selectors, num_selectors,
+                                   cudaMemcpyHostToDevice, stream));
+  int encoded_bits =
+      huffman_encode(d_rle2_out, h_rle2_len, alphabet_size + 2, dev_encoded,
+                     len, code, dev_selectors, num_selectors, n_groups, stream);
+  CUDA_ERROR_CHECK(cudaStreamSynchronize(stream));
+
+  const int total_words = (encoded_bits + 31) / 32;
+  out_data.huff_data.resize(total_words);
+  CUDA_ERROR_CHECK(cudaMemcpyAsync(out_data.huff_data.data(), dev_encoded,
+                                   total_words * sizeof(uint32_t),
+                                   cudaMemcpyDeviceToHost, stream));
+  CUDA_ERROR_CHECK(cudaStreamSynchronize(stream));
+
+  out_data.orig_ptr = orig_ptr;
+  out_data.alphabet_size = alphabet_size + 2;
+  out_data.num_selectors = num_selectors;
+  out_data.n_groups = n_groups;
+  out_data.huff_bits = encoded_bits;
+  for (int g = 0; g < n_groups; g++) {
+    for (int s = 0; s < out_data.alphabet_size; s++) {
+      out_data.huff_len[g][s] = len[g][s];
+    }
+  }
+
+  delete[] selectors;
   CUDA_ERROR_CHECK(cudaFreeAsync(dev_selectors, stream));
   CUDA_ERROR_CHECK(cudaFreeAsync(dev_encoded, stream));
   CUDA_ERROR_CHECK(cudaStreamSynchronize(stream));
@@ -159,11 +200,12 @@ void bzip2_gpu_compress(const uint8_t *in, int in_len, int n,
     blocks[i].crc = bzip2_crc32(in + start, len);
     threads.emplace_back(
         [=, &blocks]() { compress_block(in + start, len, blocks[i]); });
+    threads[i].join();
   }
 
-  for (auto &t : threads) {
-    t.join();
-  }
+  // for (auto &t : threads) {
+  // t.join();
+  // }
 
   uint32_t stream_crc = 0;
 
@@ -181,10 +223,70 @@ void bzip2_gpu_compress(const uint8_t *in, int in_len, int n,
     bw.write(blocks[i].crc, 32);
     bw.write(0, 1);
     bw.write(blocks[i].orig_ptr, 24);
-    bw.write(0, 7); // 7 bits zeroes padding
 
-    for (uint16_t v : blocks[i].rle2_data) {
-      bw.write(v, 16);
+    // 1) SymMap
+    uint16_t mapL1 = 0;
+    for (int r = 0; r < 16; r++) {
+      bool any = false;
+      for (int s = 0; s < 16; s++) {
+        if (blocks[i].present_symbols[r * 16 + s]) {
+          any = true;
+          break;
+        }
+      }
+      if (any)
+        mapL1 |= (1 << (15 - r));
+    }
+    bw.write(mapL1, 16);
+    for (int r = 0; r < 16; r++) {
+      if ((mapL1 >> (15 - r)) & 1) {
+        uint16_t mapL2 = 0;
+        for (int s = 0; s < 16; s++) {
+          if (blocks[i].present_symbols[r * 16 + s]) {
+            mapL2 |= (1 << (15 - s));
+          }
+        }
+        bw.write(mapL2, 16);
+      }
+    }
+
+    // 2) NumTrees
+    bw.write(blocks[i].n_groups, 3);
+
+    // 3) NumSels
+    bw.write(blocks[i].num_selectors, 15);
+
+    // 4) Selectors
+    for (uint8_t sel : blocks[i].selectors_mtf) {
+      for (int k = 0; k < sel; k++)
+        bw.write(1, 1);
+      bw.write(0, 1);
+    }
+
+    // 5) Trees
+    for (int t = 0; t < blocks[i].n_groups; t++) {
+      uint8_t curr = blocks[i].huff_len[t][0];
+      bw.write(curr, 5);
+      for (int s = 0; s < blocks[i].alphabet_size; s++) {
+        uint8_t target = blocks[i].huff_len[t][s];
+        while (curr < target) {
+          bw.write(2, 2); // 10
+          curr++;
+        }
+        while (curr > target) {
+          bw.write(3, 2); // 11
+          curr--;
+        }
+        bw.write(0, 1);
+      }
+    }
+
+    // 6) Huffman Encoded Data
+    int bits_remaining = blocks[i].huff_bits;
+    for (uint32_t word : blocks[i].huff_data) {
+      int bits_to_write = std::min(32, bits_remaining);
+      bw.write(word >> (32 - bits_to_write), bits_to_write);
+      bits_remaining -= bits_to_write;
     }
   }
 

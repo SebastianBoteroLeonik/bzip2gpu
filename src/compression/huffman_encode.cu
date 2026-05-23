@@ -21,7 +21,7 @@ __global__ void calc_bit_lengths_kernel(const uint16_t *d_data_in,
   if (idx >= data_in_len)
     return;
 
-  uint8_t symbol = d_data_in[idx];
+  uint16_t symbol = d_data_in[idx];
   uint8_t table_idx = d_selectors[idx / BZ_G_SIZE];
   d_bit_lengths[idx] = c_len[table_idx][symbol];
 }
@@ -36,7 +36,7 @@ __global__ void pack_bits_kernel(const uint16_t *d_data_in,
   if (idx >= data_in_len)
     return;
 
-  uint8_t symbol = d_data_in[idx];
+  uint16_t symbol = d_data_in[idx];
   uint8_t table_idx = d_selectors[idx / BZ_G_SIZE];
 
   int32_t code = c_code[table_idx][symbol];
@@ -75,7 +75,7 @@ int huffman_encode(uint16_t *dev_data_in, int data_in_len, int alphabet_size,
                    uint8_t len[max_n_groups][max_alphabet_size],
                    int32_t code[max_n_groups][max_alphabet_size],
                    uint8_t *dev_selectors, int32_t num_selectors,
-                   cudaStream_t stream) {
+                   int n_groups, cudaStream_t stream) {
   CUDA_ERROR_CHECK(cudaMemcpyToSymbolAsync(c_len, len,
                                            max_n_groups * max_alphabet_size, 0,
                                            cudaMemcpyHostToDevice, stream));

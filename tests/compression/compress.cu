@@ -7,6 +7,24 @@
 #include "../../src/compression/crc32.h"
 #include "compression.h"
 
+#include <cstdint>
+#include <fstream>
+#include <iostream>
+
+bool writeBinaryFile(const std::string &filename,
+                     const std::vector<uint8_t> &data) {
+  std::ofstream outFile(filename, std::ios::out | std::ios::binary);
+
+  if (!outFile) {
+    std::cerr << "Failed to open file for writing: " << filename << std::endl;
+    return false;
+  }
+
+  outFile.write(reinterpret_cast<const char *>(data.data()), data.size());
+
+  return outFile.good();
+}
+
 TEST(compress, empty_input) {
   std::vector<uint8_t> out;
   bzip2_gpu_compress(nullptr, 0, 9, out);
@@ -32,11 +50,13 @@ TEST(compress, empty_input) {
 }
 
 TEST(compress, single_block_basic) {
-  const char *input_str = "hello world!";
+  const char *input_str = "hello world!\n";
   int in_len = std::strlen(input_str);
 
   std::vector<uint8_t> out;
   bzip2_gpu_compress((const uint8_t *)input_str, in_len, 1, out);
+
+  writeBinaryFile("test.bz2", out);
 
   ASSERT_GT(out.size(), 28);
 
@@ -69,13 +89,20 @@ TEST(compress, multiple_blocks) {
   std::vector<uint8_t> out;
   bzip2_gpu_compress(input.data(), in_len, 1, out);
 
+  writeBinaryFile("test_multiple.bz2", out);
+
   ASSERT_GT(out.size(), 56);
 
   int magic_count = 0;
-  for (size_t i = 0; i < out.size() - 5; i++) {
-    if (out[i] == 0x31 && out[i + 1] == 0x41 && out[i + 2] == 0x59 &&
-        out[i + 3] == 0x26 && out[i + 4] == 0x53 && out[i + 5] == 0x59) {
-      magic_count++;
+  uint64_t current = 0;
+  int current_bits = 0;
+  for (uint8_t b : out) {
+    for (int i = 7; i >= 0; i--) {
+      current = (current << 1) | ((b >> i) & 1);
+      current &= 0xFFFFFFFFFFFFULL;
+      if (current == 0x314159265359ULL) {
+        magic_count++;
+      }
     }
   }
 

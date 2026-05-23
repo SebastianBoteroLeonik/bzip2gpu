@@ -6,13 +6,13 @@
 #include "compression.h"
 #include "utils.h"
 
-void simple_rle2_compress(const uint8_t *in, int in_len, uint16_t *&out, uint32_t &out_len) {
-  out = new uint16_t[in_len * 2];
+void simple_rle2_compress(const uint8_t *in, int in_len, uint16_t *&out, uint32_t &out_len, int table_size) {
+  out = new uint16_t[in_len * 2 + 1];
   int out_pos = 0;
   int i = 0;
   while (i < in_len) {
     if (in[i] != 0) {
-      out[out_pos++] = in[i];
+      out[out_pos++] = in[i] + 1;
       i++;
     } else {
       int run_len = 0;
@@ -23,11 +23,12 @@ void simple_rle2_compress(const uint8_t *in, int in_len, uint16_t *&out, uint32_
       int k = run_len;
       while (k > 0) {
         k--;
-        out[out_pos++] = (k & 1) ? 257 : 256;
+        out[out_pos++] = (k & 1) ? 1 : 0;
         k >>= 1;
       }
     }
   }
+  out[out_pos++] = table_size + 1;
   out_len = out_pos;
 }
 
@@ -45,18 +46,24 @@ void simple_rle2_compress(const uint8_t *in, int in_len, uint16_t *&out, uint32_
     }                                                                          \
     reps--;                                                                    \
   }                                                                            \
+  int table_size = 0;                                                           \
+  {                                                                            \
+    bool present[256] = {false};                                               \
+    for (int i = 0; i < in_len; i++) present[input[i]] = true;                 \
+    for (int i = 0; i < 256; i++) if (present[i]) table_size++;                \
+  }                                                                            \
   uint16_t *reference_output = nullptr;                                        \
   uint32_t reference_out_len = 0;                                              \
-  simple_rle2_compress(input, in_len, reference_output, reference_out_len);    \
+  simple_rle2_compress(input, in_len, reference_output, reference_out_len, table_size); \
   uint8_t *input_cuda;                                                         \
   CUDA_ERROR_CHECK(cudaMalloc(&input_cuda, sizeof(input)));                    \
   CUDA_ERROR_CHECK(                                                            \
       cudaMemcpy(input_cuda, input, sizeof(input), cudaMemcpyHostToDevice));   \
   uint16_t *cuda_output;                                                       \
-  CUDA_ERROR_CHECK(cudaMalloc(&cuda_output, sizeof(uint16_t) * in_len));       \
+  CUDA_ERROR_CHECK(cudaMalloc(&cuda_output, sizeof(uint16_t) * (in_len + 1))); \
   uint32_t *d_out_len;                                                         \
   CUDA_ERROR_CHECK(cudaMalloc(&d_out_len, sizeof(uint32_t)));                  \
-  rle2_compress(input_cuda, in_len, cuda_output, d_out_len);                   \
+  rle2_compress(input_cuda, in_len, cuda_output, d_out_len, table_size);            \
   uint32_t cuda_out_len = 0;                                                   \
   CUDA_ERROR_CHECK(cudaMemcpy(&cuda_out_len, d_out_len, sizeof(uint32_t), cudaMemcpyDeviceToHost)); \
   CUDA_ERROR_CHECK(cudaFree(input_cuda));                                      \
@@ -86,19 +93,25 @@ TEST(compress, rle2_incompressible) {
   for (int i = 0; i < in_len; i++) {
     input[i] = (rand() % 255) + 1;
   }
+  int table_size = 0;
+  {
+    bool present[256] = {false};
+    for (int i = 0; i < in_len; i++) present[input[i]] = true;
+    for (int i = 0; i < 256; i++) if (present[i]) table_size++;
+  }
   uint16_t *reference_output = nullptr;
   uint32_t reference_out_len = 0;
-  simple_rle2_compress(input, in_len, reference_output, reference_out_len);
+  simple_rle2_compress(input, in_len, reference_output, reference_out_len, table_size);
   
   uint8_t *input_cuda;
   CUDA_ERROR_CHECK(cudaMalloc(&input_cuda, sizeof(input)));
   CUDA_ERROR_CHECK(
       cudaMemcpy(input_cuda, input, sizeof(input), cudaMemcpyHostToDevice));
   uint16_t *cuda_output;
-  CUDA_ERROR_CHECK(cudaMalloc(&cuda_output, sizeof(uint16_t) * in_len));
+  CUDA_ERROR_CHECK(cudaMalloc(&cuda_output, sizeof(uint16_t) * (in_len + 1)));
   uint32_t *d_out_len;
   CUDA_ERROR_CHECK(cudaMalloc(&d_out_len, sizeof(uint32_t)));
-  rle2_compress(input_cuda, in_len, cuda_output, d_out_len);
+  rle2_compress(input_cuda, in_len, cuda_output, d_out_len, table_size);
   uint32_t cuda_out_len = 0;
   CUDA_ERROR_CHECK(cudaMemcpy(&cuda_out_len, d_out_len, sizeof(uint32_t), cudaMemcpyDeviceToHost));
   CUDA_ERROR_CHECK(cudaFree(input_cuda));
