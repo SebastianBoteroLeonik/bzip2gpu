@@ -67,7 +67,8 @@ int huffman_build_trees(uint16_t *device_data_in, int data_in_len,
                         int alphabet_size,
                         uint8_t len[max_n_groups][max_alphabet_size],
                         int32_t code[max_n_groups][max_alphabet_size],
-                        uint8_t *&selectors, int &n_groups, cudaStream_t stream);
+                        uint8_t *&selectors, int &n_groups,
+                        cudaStream_t stream);
 
 /**
  * Run Burrows-Wheeler transform
@@ -88,7 +89,7 @@ int huffman_encode(uint16_t *dev_data_in, int data_in_len, int alphabet_size,
                    uint32_t *&dev_encoded_data,
                    uint8_t len[max_n_groups][max_alphabet_size],
                    int32_t code[max_n_groups][max_alphabet_size],
-                   uint8_t *dev_selectors, int32_t num_selectors,
-                   int n_groups, cudaStream_t stream);
+                   uint8_t *dev_selectors, int32_t num_selectors, int n_groups,
+                   cudaStream_t stream);
 
 #endif // !COMPRESSION

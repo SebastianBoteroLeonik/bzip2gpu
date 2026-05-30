@@ -1,10 +1,9 @@
 #include "compression.h"
 #include "utils.h"
 
-#include <thrust/device_vector.h>
+#include <thrust/device_ptr.h>
 #include <thrust/scan.h>
 #include <thrust/execution_policy.h>
-#include <thrust/host_vector.h>
 
 static constexpr int RLE2_CHUNK_SIZE = 512;
 static constexpr int MAX_SYMS_PER_CHUNK = RLE2_CHUNK_SIZE + 24;
@@ -112,36 +111,48 @@ void rle2_compress(const uint8_t *d_in,
 
   const int num_chunks = (int)((n + RLE2_CHUNK_SIZE - 1) / RLE2_CHUNK_SIZE);
 
-  thrust::device_vector<uint16_t> d_local_syms(
-      (size_t)num_chunks * MAX_SYMS_PER_CHUNK);
+  uint16_t *d_local_syms_raw;
+  uint32_t *d_counts_raw;
+  uint32_t *d_offsets_raw;
+  size_t local_syms_bytes = (size_t)num_chunks * MAX_SYMS_PER_CHUNK * sizeof(uint16_t);
+  size_t counts_bytes = (num_chunks + 1) * sizeof(uint32_t);
+  CUDA_ERROR_CHECK(cudaMallocAsync(&d_local_syms_raw, local_syms_bytes, stream));
+  CUDA_ERROR_CHECK(cudaMallocAsync(&d_counts_raw, counts_bytes, stream));
+  CUDA_ERROR_CHECK(cudaMallocAsync(&d_offsets_raw, counts_bytes, stream));
+  CUDA_ERROR_CHECK(cudaMemsetAsync(d_counts_raw, 0, counts_bytes, stream));
+  CUDA_ERROR_CHECK(cudaMemsetAsync(d_offsets_raw, 0, counts_bytes, stream));
 
-  thrust::device_vector<uint32_t> d_counts(num_chunks + 1, 0u);
-  thrust::device_vector<uint32_t> d_offsets(num_chunks + 1, 0u);
+  thrust::device_ptr<uint32_t> d_counts(d_counts_raw);
+  thrust::device_ptr<uint32_t> d_offsets(d_offsets_raw);
 
   rle2_phase1<<<num_chunks, 1, 0, stream>>>(
       d_in, n,
-      thrust::raw_pointer_cast(d_local_syms.data()),
-      thrust::raw_pointer_cast(d_counts.data()),
+      d_local_syms_raw,
+      d_counts_raw,
       table_size);
   CUDA_ERROR_CHECK(cudaGetLastError());
 
   thrust::exclusive_scan(
       thrust::cuda::par.on(stream),
-      d_counts.begin(), d_counts.begin() + num_chunks + 1,
-      d_offsets.begin());
+      d_counts, d_counts + num_chunks + 1,
+      d_offsets);
 
   CUDA_ERROR_CHECK(cudaMemcpyAsync(
       d_out_len,
-      thrust::raw_pointer_cast(d_offsets.data()) + num_chunks,
+      d_offsets_raw + num_chunks,
       sizeof(uint32_t),
       cudaMemcpyDeviceToDevice,
       stream));
 
   constexpr int COPY_THREADS = 32;
   rle2_phase3<<<num_chunks, COPY_THREADS, 0, stream>>>(
-      thrust::raw_pointer_cast(d_local_syms.data()),
-      thrust::raw_pointer_cast(d_offsets.data()),
-      thrust::raw_pointer_cast(d_counts.data()),
+      d_local_syms_raw,
+      d_offsets_raw,
+      d_counts_raw,
       d_out);
   CUDA_ERROR_CHECK(cudaGetLastError());
+
+  CUDA_ERROR_CHECK(cudaFreeAsync(d_local_syms_raw, stream));
+  CUDA_ERROR_CHECK(cudaFreeAsync(d_counts_raw, stream));
+  CUDA_ERROR_CHECK(cudaFreeAsync(d_offsets_raw, stream));
 }

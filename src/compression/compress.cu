@@ -3,8 +3,8 @@
 #include "utils.h"
 
 #include <algorithm>
-#include <future>
-#include <iostream>
+#include <cstdio>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -23,31 +23,34 @@ struct BlockData {
 
 class BitWriter {
   std::vector<uint8_t> &out;
-  uint8_t buf = 0;
-  int bits_in_buf = 0;
+  uint64_t bit_buffer = 0;
+  int bits_in_buffer = 0;
 
 public:
   BitWriter(std::vector<uint8_t> &out) : out(out) {}
 
   void write(uint32_t val, int num_bits) {
-    for (int i = num_bits - 1; i >= 0; i--) {
-      uint8_t bit = (val >> i) & 1;
-      buf = (buf << 1) | bit;
-      bits_in_buf++;
-      if (bits_in_buf == 8) {
-        out.push_back(buf);
-        buf = 0;
-        bits_in_buf = 0;
-      }
+    if (num_bits == 0)
+      return;
+
+    val &= (1ULL << num_bits) - 1;
+
+    bit_buffer = (bit_buffer << num_bits) | val;
+    bits_in_buffer += num_bits;
+
+    while (bits_in_buffer >= 8) {
+      bits_in_buffer -= 8;
+      out.push_back(static_cast<uint8_t>(bit_buffer >> bits_in_buffer));
     }
   }
 
   void pad_to_byte_boundary() {
-    if (bits_in_buf > 0) {
-      buf <<= (8 - bits_in_buf);
-      out.push_back(buf);
-      buf = 0;
-      bits_in_buf = 0;
+    if (bits_in_buffer > 0) {
+      int padding_bits = 8 - bits_in_buffer;
+      bit_buffer <<= padding_bits;
+      out.push_back(static_cast<uint8_t>(bit_buffer));
+      bit_buffer = 0;
+      bits_in_buffer = 0;
     }
   }
 };
@@ -75,7 +78,6 @@ void compress_block(const uint8_t *in_data, int in_len, BlockData &out_data) {
   uint16_t *d_rle2_out = nullptr;
   uint32_t *d_rle2_len = nullptr;
 
-  // Max RLE2 size
   int rle2_max_out = rle1_len * 2 + 100;
   CUDA_ERROR_CHECK(
       cudaMallocAsync(&d_rle2_out, rle2_max_out * sizeof(uint16_t), stream));
@@ -96,7 +98,6 @@ void compress_block(const uint8_t *in_data, int in_len, BlockData &out_data) {
   int num_selectors =
       huffman_build_trees(d_rle2_out, h_rle2_len, alphabet_size, len, code,
                           selectors, n_groups, stream);
-  CUDA_ERROR_CHECK(cudaStreamSynchronize(stream));
 
   out_data.selectors_mtf.resize(num_selectors);
   {
@@ -126,7 +127,6 @@ void compress_block(const uint8_t *in_data, int in_len, BlockData &out_data) {
   int encoded_bits =
       huffman_encode(d_rle2_out, h_rle2_len, alphabet_size + 2, dev_encoded,
                      len, code, dev_selectors, num_selectors, n_groups, stream);
-  CUDA_ERROR_CHECK(cudaStreamSynchronize(stream));
 
   const int total_words = (encoded_bits + 31) / 32;
   out_data.huff_data.resize(total_words);
@@ -149,9 +149,6 @@ void compress_block(const uint8_t *in_data, int in_len, BlockData &out_data) {
   delete[] selectors;
   CUDA_ERROR_CHECK(cudaFreeAsync(dev_selectors, stream));
   CUDA_ERROR_CHECK(cudaFreeAsync(dev_encoded, stream));
-  CUDA_ERROR_CHECK(cudaStreamSynchronize(stream));
-
-  out_data.orig_ptr = orig_ptr;
 
   CUDA_ERROR_CHECK(cudaFreeAsync(d_in, stream));
   CUDA_ERROR_CHECK(cudaFreeAsync(d_rle1_out, stream));
@@ -170,6 +167,13 @@ void bzip2_gpu_compress(const uint8_t *in, int in_len, int n,
   if (n > 9)
     n = 9;
 
+  if (cudaHostRegister((void *)in, in_len, cudaHostRegisterDefault) !=
+      cudaSuccess) {
+    cudaGetLastError();
+  }
+
+  out.reserve(out.size() + (in_len / 4) + 1024);
+
   BitWriter bw(out);
   bw.write(0x42, 8);     // 'B'
   bw.write(0x5A, 8);     // 'Z'
@@ -185,6 +189,7 @@ void bzip2_gpu_compress(const uint8_t *in, int in_len, int n,
     bw.write(0x90, 8);
     bw.write(0, 32); // stream crc 0
     bw.pad_to_byte_boundary();
+    cudaHostUnregister((void *)in);
     return;
   }
 
@@ -192,20 +197,41 @@ void bzip2_gpu_compress(const uint8_t *in, int in_len, int n,
   int num_blocks = (in_len + block_size - 1) / block_size;
 
   std::vector<BlockData> blocks(num_blocks);
-  std::vector<std::thread> threads;
 
-  for (int i = 0; i < num_blocks; ++i) {
-    int start = i * block_size;
-    int len = std::min(block_size, in_len - start);
-    blocks[i].crc = bzip2_crc32(in + start, len);
-    threads.emplace_back(
-        [=, &blocks]() { compress_block(in + start, len, blocks[i]); });
-    threads[i].join();
+  int max_threads = std::thread::hardware_concurrency();
+  if (max_threads <= 0)
+    max_threads = 4;
+  int num_workers = std::min(max_threads, 16);
+
+  std::mutex queue_mtx;
+  int current_block = 0;
+  std::vector<std::thread> workers;
+
+  for (int w = 0; w < num_workers; ++w) {
+    workers.emplace_back([&]() {
+      while (true) {
+        int i = -1;
+        {
+          std::lock_guard<std::mutex> lock(queue_mtx);
+          if (current_block >= num_blocks)
+            return;
+          i = current_block++;
+        }
+
+        int start = i * block_size;
+        int len = std::min(block_size, in_len - start);
+
+        // FIX 2: Compute sequential CRC32 independently in the worker thread
+        blocks[i].crc = bzip2_crc32(in + start, len);
+
+        compress_block(in + start, len, blocks[i]);
+      }
+    });
   }
 
-  // for (auto &t : threads) {
-  // t.join();
-  // }
+  for (auto &t : workers) {
+    t.join();
+  }
 
   uint32_t stream_crc = 0;
 
@@ -299,4 +325,6 @@ void bzip2_gpu_compress(const uint8_t *in, int in_len, int n,
 
   bw.write(stream_crc, 32);
   bw.pad_to_byte_boundary();
+
+  cudaHostUnregister((void *)in);
 }

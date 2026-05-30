@@ -3,8 +3,9 @@
 
 #include <cstdint>
 #include <cstdio>
-#include <thrust/device_vector.h>
+#include <thrust/device_ptr.h>
 #include <thrust/execution_policy.h>
+#include <thrust/find.h>
 #include <thrust/scan.h>
 
 struct MTFState {
@@ -156,14 +157,18 @@ int fmtf(const uint8_t *in_original, const int *in_suffix_array, int in_len,
   CUDA_ERROR_CHECK(
       cudaMallocAsync((void **)&d_out, N * sizeof(uint8_t), stream));
 
-  thrust::device_vector<MTFState> d_partial(num_threads);
-  thrust::device_vector<MTFState> d_scanned(num_threads);
+  MTFState *d_partial_raw;
+  MTFState *d_scanned_raw;
+  CUDA_ERROR_CHECK(cudaMallocAsync(&d_partial_raw, num_threads * sizeof(MTFState), stream));
+  CUDA_ERROR_CHECK(cudaMallocAsync(&d_scanned_raw, num_threads * sizeof(MTFState), stream));
+  thrust::device_ptr<MTFState> d_partial(d_partial_raw);
+  thrust::device_ptr<MTFState> d_scanned(d_scanned_raw);
 
   int blockSize = 256;
   int gridSize = (num_threads + blockSize - 1) / blockSize;
 
   mtf_per_thread_bwt<<<gridSize, blockSize, 0, stream>>>(
-      in_original, in_suffix_array, thrust::raw_pointer_cast(d_partial.data()),
+      in_original, in_suffix_array, d_partial_raw,
       N, J);
 
   uint8_t *symbol_table;
@@ -204,13 +209,13 @@ int fmtf(const uint8_t *in_original, const int *in_suffix_array, int in_len,
     identity.chars[i] = symbol_table[i];
   }
 
-  thrust::exclusive_scan(thrust::cuda::par.on(stream), d_partial.begin(),
-                         d_partial.end(), d_scanned.begin(), identity,
+  thrust::exclusive_scan(thrust::cuda::par.on(stream), d_partial,
+                         d_partial + num_threads, d_scanned, identity,
                          MTFAppendUnique());
 
   apply_mtf_kernel_bwt<<<gridSize, blockSize, 0, stream>>>(
       in_original, in_suffix_array, d_out,
-      thrust::raw_pointer_cast(d_scanned.data()), N, J);
+      d_scanned_raw, N, J);
 
   delete[] symbol_table;
 
@@ -218,5 +223,8 @@ int fmtf(const uint8_t *in_original, const int *in_suffix_array, int in_len,
   auto iter = thrust::find_if(thrust::cuda::par.on(stream), sa_ptr,
                               sa_ptr + in_len, is_zero());
   orig_ptr = iter - sa_ptr;
+
+  CUDA_ERROR_CHECK(cudaFreeAsync(d_partial_raw, stream));
+  CUDA_ERROR_CHECK(cudaFreeAsync(d_scanned_raw, stream));
   return table_size;
 }

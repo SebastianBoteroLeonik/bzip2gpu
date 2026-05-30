@@ -2,8 +2,12 @@
 #include "utils.h"
 #include <cstdint>
 #include <cstdio>
-#include <thrust/device_vector.h>
+#include <thrust/device_ptr.h>
+#include <thrust/execution_policy.h>
 #include <thrust/iterator/constant_iterator.h>
+#include <thrust/reduce.h>
+#include <thrust/scan.h>
+#include <thrust/transform.h>
 
 // Functor to calculate the encoded size of a run
 struct RunSizeCalc {
@@ -53,8 +57,6 @@ __global__ void write_bzip2_rle1_kernel(const uint8_t *chars, const int *counts,
   }
 }
 
-#include <thrust/execution_policy.h>
-
 int rle1_compress(const uint8_t *d_in, int in_len, uint8_t *&d_out, cudaStream_t stream) {
   if (in_len == 0)
     return 0;
@@ -62,24 +64,36 @@ int rle1_compress(const uint8_t *d_in, int in_len, uint8_t *&d_out, cudaStream_t
   auto exec_policy = thrust::cuda::par.on(stream);
   thrust::device_ptr<const uint8_t> d_in_ptr(d_in);
 
-  thrust::device_vector<uint8_t> d_chars(in_len);
-  thrust::device_vector<int> d_counts(in_len);
+  uint8_t *d_chars_raw;
+  int *d_counts_raw;
+  CUDA_ERROR_CHECK(cudaMallocAsync(&d_chars_raw, in_len * sizeof(uint8_t), stream));
+  CUDA_ERROR_CHECK(cudaMallocAsync(&d_counts_raw, in_len * sizeof(int), stream));
+  thrust::device_ptr<uint8_t> d_chars(d_chars_raw);
+  thrust::device_ptr<int> d_counts(d_counts_raw);
 
   auto new_end = thrust::reduce_by_key(exec_policy, d_in_ptr, d_in_ptr + in_len,
                                        thrust::make_constant_iterator(1),
-                                       d_chars.begin(), d_counts.begin());
-  int num_runs = new_end.first - d_chars.begin();
+                                       d_chars, d_counts);
+  int num_runs = new_end.first - d_chars;
 
-  thrust::device_vector<int> d_sizes(num_runs);
-  thrust::transform(exec_policy, d_counts.begin(), d_counts.begin() + num_runs,
-                    d_sizes.begin(), RunSizeCalc());
+  int *d_sizes_raw;
+  CUDA_ERROR_CHECK(cudaMallocAsync(&d_sizes_raw, num_runs * sizeof(int), stream));
+  thrust::device_ptr<int> d_sizes(d_sizes_raw);
+  thrust::transform(exec_policy, d_counts, d_counts + num_runs,
+                    d_sizes, RunSizeCalc());
 
-  thrust::device_vector<int> d_offsets(num_runs);
-  thrust::exclusive_scan(exec_policy, d_sizes.begin(), d_sizes.begin() + num_runs,
-                         d_offsets.begin());
+  int *d_offsets_raw;
+  CUDA_ERROR_CHECK(cudaMallocAsync(&d_offsets_raw, num_runs * sizeof(int), stream));
+  thrust::device_ptr<int> d_offsets(d_offsets_raw);
+  thrust::exclusive_scan(exec_policy, d_sizes, d_sizes + num_runs,
+                         d_offsets);
 
-  int last_size = d_sizes[num_runs - 1];
-  int last_offset = d_offsets[num_runs - 1];
+  int last_size, last_offset;
+  CUDA_ERROR_CHECK(cudaMemcpyAsync(&last_size, d_sizes_raw + num_runs - 1,
+                                   sizeof(int), cudaMemcpyDeviceToHost, stream));
+  CUDA_ERROR_CHECK(cudaMemcpyAsync(&last_offset, d_offsets_raw + num_runs - 1,
+                                   sizeof(int), cudaMemcpyDeviceToHost, stream));
+  CUDA_ERROR_CHECK(cudaStreamSynchronize(stream));
   int total_out_size = last_offset + last_size;
 
   CUDA_ERROR_CHECK(cudaMallocAsync((void **)&d_out, total_out_size, stream));
@@ -88,9 +102,12 @@ int rle1_compress(const uint8_t *d_in, int in_len, uint8_t *&d_out, cudaStream_t
   int blocks = (num_runs + threadsPerBlock - 1) / threadsPerBlock;
 
   write_bzip2_rle1_kernel<<<blocks, threadsPerBlock, 0, stream>>>(
-      thrust::raw_pointer_cast(d_chars.data()),
-      thrust::raw_pointer_cast(d_counts.data()),
-      thrust::raw_pointer_cast(d_offsets.data()), num_runs, d_out);
+      d_chars_raw, d_counts_raw, d_offsets_raw, num_runs, d_out);
+
+  CUDA_ERROR_CHECK(cudaFreeAsync(d_chars_raw, stream));
+  CUDA_ERROR_CHECK(cudaFreeAsync(d_counts_raw, stream));
+  CUDA_ERROR_CHECK(cudaFreeAsync(d_sizes_raw, stream));
+  CUDA_ERROR_CHECK(cudaFreeAsync(d_offsets_raw, stream));
 
   return total_out_size;
 }

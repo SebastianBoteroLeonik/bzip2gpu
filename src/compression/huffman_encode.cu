@@ -9,11 +9,12 @@
 #include <thrust/execution_policy.h>
 #include <thrust/scan.h>
 
-__constant__ uint8_t c_len[max_n_groups][max_alphabet_size];
-__constant__ int32_t c_code[max_n_groups][max_alphabet_size];
+// __constant__ uint8_t c_len[max_n_groups][max_alphabet_size];
+// __constant__ int32_t c_code[max_n_groups][max_alphabet_size];
 
 __global__ void calc_bit_lengths_kernel(const uint16_t *d_data_in,
                                         const uint8_t *d_selectors,
+                                        const uint8_t *c_len, // [max_n_groups][max_alphabet_size]
                                         int32_t *d_bit_lengths,
                                         int data_in_len) {
   constexpr int BZ_G_SIZE = 50;
@@ -23,11 +24,12 @@ __global__ void calc_bit_lengths_kernel(const uint16_t *d_data_in,
 
   uint16_t symbol = d_data_in[idx];
   uint8_t table_idx = d_selectors[idx / BZ_G_SIZE];
-  d_bit_lengths[idx] = c_len[table_idx][symbol];
+  d_bit_lengths[idx] = c_len[table_idx * max_alphabet_size + symbol];
 }
 
 __global__ void pack_bits_kernel(const uint16_t *d_data_in,
                                  const uint8_t *d_selectors,
+                                 const int32_t *c_code, // [max_n_groups][max_alphabet_size]
                                  const int32_t *d_bit_offsets,
                                  const int32_t *d_bit_lengths,
                                  uint32_t *d_encoded_words, int data_in_len) {
@@ -39,7 +41,7 @@ __global__ void pack_bits_kernel(const uint16_t *d_data_in,
   uint16_t symbol = d_data_in[idx];
   uint8_t table_idx = d_selectors[idx / BZ_G_SIZE];
 
-  int32_t code = c_code[table_idx][symbol];
+  int32_t code = c_code[table_idx * max_alphabet_size + symbol];
   int32_t length = d_bit_lengths[idx];
   int32_t bit_offset = d_bit_offsets[idx];
 
@@ -76,11 +78,16 @@ int huffman_encode(uint16_t *dev_data_in, int data_in_len, int alphabet_size,
                    int32_t code[max_n_groups][max_alphabet_size],
                    uint8_t *dev_selectors, int32_t num_selectors,
                    int n_groups, cudaStream_t stream) {
-  CUDA_ERROR_CHECK(cudaMemcpyToSymbolAsync(c_len, len,
-                                           max_n_groups * max_alphabet_size, 0,
-                                           cudaMemcpyHostToDevice, stream));
-  CUDA_ERROR_CHECK(cudaMemcpyToSymbolAsync(
-      c_code, code, sizeof(**code) * max_n_groups * max_alphabet_size, 0,
+  uint8_t *dev_c_len;
+  int32_t *dev_c_code;
+  CUDA_ERROR_CHECK(cudaMallocAsync(&dev_c_len, max_n_groups * max_alphabet_size, stream));
+  CUDA_ERROR_CHECK(cudaMallocAsync(&dev_c_code, sizeof(int32_t) * max_n_groups * max_alphabet_size, stream));
+
+  CUDA_ERROR_CHECK(cudaMemcpyAsync(dev_c_len, len,
+                                   max_n_groups * max_alphabet_size,
+                                   cudaMemcpyHostToDevice, stream));
+  CUDA_ERROR_CHECK(cudaMemcpyAsync(
+      dev_c_code, code, sizeof(int32_t) * max_n_groups * max_alphabet_size,
       cudaMemcpyHostToDevice, stream));
   auto stream_execution_policy = thrust::cuda::par.on(stream);
 
@@ -95,7 +102,7 @@ int huffman_encode(uint16_t *dev_data_in, int data_in_len, int alphabet_size,
     const int blocks_count = (data_in_len + block_size - 1) / block_size;
 
     calc_bit_lengths_kernel<<<blocks_count, block_size, 0, stream>>>(
-        dev_data_in, dev_selectors, dev_bit_lengths, data_in_len);
+        dev_data_in, dev_selectors, dev_c_len, dev_bit_lengths, data_in_len);
     CUDA_ERROR_CHECK(cudaStreamSynchronize(stream));
   }
 
@@ -123,12 +130,14 @@ int huffman_encode(uint16_t *dev_data_in, int data_in_len, int alphabet_size,
     const int blocks_count = (data_in_len + block_size - 1) / block_size;
 
     pack_bits_kernel<<<blocks_count, block_size, 0, stream>>>(
-        dev_data_in, dev_selectors, dev_bit_offsets, dev_bit_lengths,
+        dev_data_in, dev_selectors, dev_c_code, dev_bit_offsets, dev_bit_lengths,
         dev_encoded_data, data_in_len);
     CUDA_ERROR_CHECK(cudaStreamSynchronize(stream));
   }
   CUDA_ERROR_CHECK(cudaFreeAsync(dev_bit_lengths, stream));
   CUDA_ERROR_CHECK(cudaFreeAsync(dev_bit_offsets, stream));
+  CUDA_ERROR_CHECK(cudaFreeAsync(dev_c_len, stream));
+  CUDA_ERROR_CHECK(cudaFreeAsync(dev_c_code, stream));
 
   return total_bits;
 }

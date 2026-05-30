@@ -33,7 +33,8 @@ void show_help() {
          "   short flags, so `-z -4' means the same as -z4 or -zv, &c.\n");
 }
 
-void parse_args(int argc, char **argv) {
+CliOptions parse_args(int argc, char **argv) {
+  CliOptions options;
   while (1) {
     static struct option long_options[] = {
         {"help", no_argument, 0, 'h'},   {"compress", no_argument, 0, 'z'},
@@ -45,10 +46,10 @@ void parse_args(int argc, char **argv) {
       break;
     switch (c) {
     case 'z':
-      printf("option z [TODO]\n");
+      options.compress = true;
       break;
     case 'c':
-      printf("option c [TODO]\n");
+      options.stdout_output = true;
       break;
     case '1':
     case '2':
@@ -59,7 +60,7 @@ void parse_args(int argc, char **argv) {
     case '7':
     case '8':
     case '9':
-      printf("option %c [TODO]\n", c);
+      options.block_size = c - '0';
       break;
 
     case 'h':
@@ -68,7 +69,8 @@ void parse_args(int argc, char **argv) {
       break;
 
     case ':':
-      printf("Missing argument [TODO]\n");
+      fprintf(stderr, "Missing argument\n");
+      exit(EXIT_FAILURE);
       break;
 
     case '?':
@@ -91,9 +93,9 @@ void parse_args(int argc, char **argv) {
   }
 
   if (optind < argc) {
-    printf("non-option ARGV-elements: ");
     while (optind < argc)
-      printf("%s ", argv[optind++]);
-    printf("\n");
+      options.input_files.push_back(argv[optind++]);
   }
+  
+  return options;
 }
