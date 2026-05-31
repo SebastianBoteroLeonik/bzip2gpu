@@ -1,5 +1,6 @@
 #include "compression.h"
 #include "crc32.h"
+#include "io.h"
 #include "utils.h"
 
 #include <algorithm>
@@ -160,71 +161,91 @@ void compress_block(const uint8_t *in_data, int in_len, BlockData &out_data) {
   CUDA_ERROR_CHECK(cudaStreamDestroy(stream));
 }
 
-void bzip2_gpu_compress(const uint8_t *in, int in_len, int n,
+void bzip2_gpu_compress(BZFileInputStream &in_stream, int n,
                         std::vector<uint8_t> &out) {
   if (n < 1)
     n = 1;
   if (n > 9)
     n = 9;
+  // fprintf(stderr, "HI0\n");
 
-  if (cudaHostRegister((void *)in, in_len, cudaHostRegisterDefault) !=
-      cudaSuccess) {
-    cudaGetLastError();
-  }
+  // if (cudaHostRegister((void *)in, in_len, cudaHostRegisterDefault) !=
+  //     cudaSuccess) {
+  //   cudaGetLastError();
+  // }
 
-  out.reserve(out.size() + (in_len / 4) + 1024);
+  // out.reserve(out.size() + (in_len / 4) + 1024);
 
+  // fprintf(stderr, "HI1\n");
   BitWriter bw(out);
   bw.write(0x42, 8);     // 'B'
   bw.write(0x5A, 8);     // 'Z'
   bw.write(0x68, 8);     // 'h'
   bw.write(0x30 + n, 8); // '1'-'9'
 
-  if (in_len == 0) {
-    bw.write(0x17, 8);
-    bw.write(0x72, 8);
-    bw.write(0x45, 8);
-    bw.write(0x38, 8);
-    bw.write(0x50, 8);
-    bw.write(0x90, 8);
-    bw.write(0, 32); // stream crc 0
-    bw.pad_to_byte_boundary();
-    cudaHostUnregister((void *)in);
-    return;
-  }
+  // if (in_len == 0) {
+  //   bw.write(0x17, 8);
+  //   bw.write(0x72, 8);
+  //   bw.write(0x45, 8);
+  //   bw.write(0x38, 8);
+  //   bw.write(0x50, 8);
+  //   bw.write(0x90, 8);
+  //   bw.write(0, 32); // stream crc 0
+  //   bw.pad_to_byte_boundary();
+  //   // cudaHostUnregister((void *)in);
+  //   return;
+  // }
 
   int block_size = n * 100000;
-  int num_blocks = (in_len + block_size - 1) / block_size;
+  // int num_blocks = (in_len + block_size - 1) / block_size;
 
-  std::vector<BlockData> blocks(num_blocks);
+  // std::vector<BlockData> blocks(num_blocks);
+  std::vector<BlockData> blocks;
 
   int max_threads = std::thread::hardware_concurrency();
   if (max_threads <= 0)
     max_threads = 4;
   int num_workers = std::min(max_threads, 16);
+  // int num_workers = 1;
 
   std::mutex queue_mtx;
-  int current_block = 0;
+  // int current_block = 0;
   std::vector<std::thread> workers;
 
+  // fprintf(stderr, "HI2\n");
   for (int w = 0; w < num_workers; ++w) {
     workers.emplace_back([&]() {
       while (true) {
-        int i = -1;
-        {
-          std::lock_guard<std::mutex> lock(queue_mtx);
-          if (current_block >= num_blocks)
-            return;
-          i = current_block++;
+        // int i = -1;
+        uint8_t *data;
+        int chunk_idx;
+        // fprintf(stderr, "HI3\n");
+        int len = in_stream.fetch(data, chunk_idx);
+        if (len < 0) {
+          return;
         }
+        // fprintf(stderr, "HI4\n");
 
-        int start = i * block_size;
-        int len = std::min(block_size, in_len - start);
+        // int start = i * block_size;
+        // int len = std::min(block_size, in_len - start);
 
         // FIX 2: Compute sequential CRC32 independently in the worker thread
-        blocks[i].crc = bzip2_crc32(in + start, len);
+        BlockData block_data;
 
-        compress_block(in + start, len, blocks[i]);
+        block_data.crc = bzip2_crc32(data, (size_t)len);
+
+        compress_block(data, len, block_data);
+        CUDA_ERROR_CHECK(cudaFreeHost(data));
+        {
+          std::lock_guard<std::mutex> lock(queue_mtx);
+          // if (len <= 0)
+          //   return;
+          // i = current_block++;
+          if (blocks.size() < chunk_idx + 1) {
+            blocks.resize(chunk_idx + 1);
+          }
+          blocks[chunk_idx] = block_data;
+        }
       }
     });
   }
@@ -235,7 +256,7 @@ void bzip2_gpu_compress(const uint8_t *in, int in_len, int n,
 
   uint32_t stream_crc = 0;
 
-  for (int i = 0; i < num_blocks; ++i) {
+  for (int i = 0; i < blocks.size(); ++i) {
     stream_crc = (stream_crc << 1) | (stream_crc >> 31);
     stream_crc ^= blocks[i].crc;
 
@@ -326,5 +347,5 @@ void bzip2_gpu_compress(const uint8_t *in, int in_len, int n,
   bw.write(stream_crc, 32);
   bw.pad_to_byte_boundary();
 
-  cudaHostUnregister((void *)in);
+  // cudaHostUnregister((void *)in);
 }

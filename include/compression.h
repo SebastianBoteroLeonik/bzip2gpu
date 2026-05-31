@@ -1,5 +1,6 @@
 #ifndef COMPRESSION
 
+#include "io.h"
 #include <cuda_runtime.h>
 #include <stdint.h>
 #include <vector>
@@ -82,7 +83,7 @@ void fbwt(const uint8_t *in, int in_len, int *&out, cudaStream_t stream = 0);
 /**
  * Orchestrates bzip2 compression on the GPU.
  */
-void bzip2_gpu_compress(const uint8_t *in, int in_len, int n,
+void bzip2_gpu_compress(BZFileInputStream &in_stream, int n,
                         std::vector<uint8_t> &out);
 
 int huffman_encode(uint16_t *dev_data_in, int data_in_len, int alphabet_size,
