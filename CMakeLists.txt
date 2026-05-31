@@ -6,6 +6,9 @@ set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CUDA_ARCHITECTURES 80)
 set(CMAKE_CUDA_SEPARABLE_COMPILATION ON)
 
+find_package(CUDA  REQUIRED)
+include_directories("${CUDA_INCLUDE_DIRS}")
+
 file(GLOB_RECURSE ALL_SRC "src/*.cpp" "src/*.cu" "src/*.c")
 
 set(APP_ENTRY_POINT "src/main.cpp")
