@@ -1,6 +1,7 @@
 #include "cli.h"
 #include "compression.h"
 #include "io.h"
+#include "stopwatch.h"
 #include <fstream>
 #include <iostream>
 #include <vector>
@@ -18,10 +19,10 @@ bool writeBinaryFile(const std::string &filename,
 
 int main(int argc, char **argv) {
   CliOptions options = parse_args(argc, argv);
+  Stopwatch stopwatch{};
 
+  stopwatch.start("All");
   if (options.input_files.empty()) {
-    // std::istreambuf_iterator<char> begin(std::cin), end;
-    // std::vector<uint8_t> input(begin, end);
     BZFileInputStream input(10, 900000);
 
     std::vector<uint8_t> output;
@@ -31,29 +32,29 @@ int main(int argc, char **argv) {
                     output.size());
   } else {
     for (const auto &file : options.input_files) {
-      // std::ifstream inFile(file, std::ios::in | std::ios::binary);
-      // if (!inFile) {
-      //   std::cerr << "bzip2gpu: Can't open input file " << file << std::endl;
-      //   continue;
-      // }
-      //
-      // std::vector<uint8_t> input((std::istreambuf_iterator<char>(inFile)),
-      //                            std::istreambuf_iterator<char>());
-      // inFile.close();
+      stopwatch.start("input creation");
       BZFileInputStream input(10, 900000, file);
+      stopwatch.end();
 
       std::vector<uint8_t> output;
+      stopwatch.start("compression");
       bzip2_gpu_compress(input, options.block_size, output);
+      stopwatch.end();
 
       if (options.stdout_output) {
+        stopwatch.start("compressed file write to stdout");
         std::cout.write(reinterpret_cast<const char *>(output.data()),
                         output.size());
+        stopwatch.end();
       } else {
+        stopwatch.start("compressed file write");
         std::string out_filename = file + ".bz2";
         writeBinaryFile(out_filename, output);
+        stopwatch.end();
       }
     }
   }
+  stopwatch.end();
 
   return 0;
 }
