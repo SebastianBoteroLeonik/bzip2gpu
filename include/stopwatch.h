@@ -4,7 +4,11 @@
 #include <string>
 #include <vector>
 
+#ifndef STOPWATCH
+#define STOPWATCH
+
 typedef std::chrono::time_point<std::chrono::high_resolution_clock> time_point;
+
 class Stopwatch {
 public:
   Stopwatch() = default;
@@ -31,8 +35,10 @@ private:
   std::vector<std::pair<std::string, double>> results_list{};
 };
 
-Stopwatch::~Stopwatch() {
+inline Stopwatch::~Stopwatch() {
   for (auto result : results_list) {
     std::cerr << result.first << ": " << result.second << "\n";
   }
 }
+
+#endif // !STOPWATCH

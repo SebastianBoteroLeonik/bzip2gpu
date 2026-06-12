@@ -1,6 +1,7 @@
 #include "compression.h"
 #include "crc32.h"
 #include "io.h"
+#include "stopwatch.h"
 #include "utils.h"
 
 #include <algorithm>
@@ -57,24 +58,35 @@ public:
 };
 
 void compress_block(const uint8_t *in_data, int in_len, BlockData &out_data) {
+  Stopwatch stopwatch{};
+  stopwatch.start("Create stream");
   cudaStream_t stream;
   CUDA_ERROR_CHECK(cudaStreamCreate(&stream));
+  stopwatch.end();
 
+  stopwatch.start("Input data transfer");
   uint8_t *d_in;
   CUDA_ERROR_CHECK(cudaMallocAsync(&d_in, in_len, stream));
   CUDA_ERROR_CHECK(
       cudaMemcpyAsync(d_in, in_data, in_len, cudaMemcpyHostToDevice, stream));
+  stopwatch.end();
 
   uint8_t *d_rle1_out = nullptr;
+  stopwatch.start("RLE1");
   int rle1_len = rle1_compress(d_in, in_len, d_rle1_out, stream);
+  stopwatch.end();
 
   int *d_bwt_out = nullptr;
+  stopwatch.start("BWT");
   fbwt(d_rle1_out, rle1_len, d_bwt_out, stream);
+  stopwatch.end();
 
   uint8_t *d_fmtf_out = nullptr;
   int orig_ptr = 0;
+  stopwatch.start("MTF");
   int alphabet_size = fmtf(d_rle1_out, d_bwt_out, rle1_len, d_fmtf_out,
                            orig_ptr, out_data.present_symbols, stream);
+  stopwatch.end();
 
   uint16_t *d_rle2_out = nullptr;
   uint32_t *d_rle2_len = nullptr;
@@ -84,8 +96,10 @@ void compress_block(const uint8_t *in_data, int in_len, BlockData &out_data) {
       cudaMallocAsync(&d_rle2_out, rle2_max_out * sizeof(uint16_t), stream));
   CUDA_ERROR_CHECK(cudaMallocAsync(&d_rle2_len, sizeof(uint32_t), stream));
 
+  stopwatch.start("RLE2");
   rle2_compress(d_fmtf_out, rle1_len, d_rle2_out, d_rle2_len, alphabet_size,
                 stream);
+  stopwatch.end();
 
   uint32_t h_rle2_len = 0;
   CUDA_ERROR_CHECK(cudaMemcpyAsync(&h_rle2_len, d_rle2_len, sizeof(uint32_t),
@@ -96,9 +110,11 @@ void compress_block(const uint8_t *in_data, int in_len, BlockData &out_data) {
   int32_t code[max_n_groups][max_alphabet_size];
   uint8_t *selectors;
   int n_groups = 0;
+  stopwatch.start("Huffman build trees");
   int num_selectors =
       huffman_build_trees(d_rle2_out, h_rle2_len, alphabet_size, len, code,
                           selectors, n_groups, stream);
+  stopwatch.end();
 
   out_data.selectors_mtf.resize(num_selectors);
   {
@@ -125,16 +141,20 @@ void compress_block(const uint8_t *in_data, int in_len, BlockData &out_data) {
   CUDA_ERROR_CHECK(cudaMallocAsync(&dev_selectors, num_selectors, stream));
   CUDA_ERROR_CHECK(cudaMemcpyAsync(dev_selectors, selectors, num_selectors,
                                    cudaMemcpyHostToDevice, stream));
+  stopwatch.start("Huffman encode");
   int encoded_bits =
       huffman_encode(d_rle2_out, h_rle2_len, alphabet_size + 2, dev_encoded,
                      len, code, dev_selectors, num_selectors, n_groups, stream);
+  stopwatch.end();
 
   const int total_words = (encoded_bits + 31) / 32;
   out_data.huff_data.resize(total_words);
+  stopwatch.start("Output data transfer");
   CUDA_ERROR_CHECK(cudaMemcpyAsync(out_data.huff_data.data(), dev_encoded,
                                    total_words * sizeof(uint32_t),
                                    cudaMemcpyDeviceToHost, stream));
   CUDA_ERROR_CHECK(cudaStreamSynchronize(stream));
+  stopwatch.end();
 
   out_data.orig_ptr = orig_ptr;
   out_data.alphabet_size = alphabet_size + 2;
@@ -215,15 +235,18 @@ void bzip2_gpu_compress(BZFileInputStream &in_stream, int n,
   // fprintf(stderr, "HI2\n");
   for (int w = 0; w < num_workers; ++w) {
     workers.emplace_back([&]() {
+      Stopwatch stopwatch{};
       while (true) {
         // int i = -1;
         uint8_t *data;
         int chunk_idx;
         // fprintf(stderr, "HI3\n");
+        stopwatch.start("fetch");
         int len = in_stream.fetch(data, chunk_idx);
         if (len < 0) {
           return;
         }
+        stopwatch.end();
         // fprintf(stderr, "HI4\n");
 
         // int start = i * block_size;
@@ -232,9 +255,13 @@ void bzip2_gpu_compress(BZFileInputStream &in_stream, int n,
         // FIX 2: Compute sequential CRC32 independently in the worker thread
         BlockData block_data;
 
+        stopwatch.start("crc calculation");
         block_data.crc = bzip2_crc32(data, (size_t)len);
+        stopwatch.end();
 
+        stopwatch.start("compress block");
         compress_block(data, len, block_data);
+        stopwatch.end();
         CUDA_ERROR_CHECK(cudaFreeHost(data));
         {
           std::lock_guard<std::mutex> lock(queue_mtx);
